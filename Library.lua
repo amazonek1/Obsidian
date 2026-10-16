@@ -1,3 +1,5 @@
+--!strict
+
 local cloneref = (cloneref or clonereference or function(instance: any)
     setthreadidentity(8)
     return instance
@@ -276,7 +278,7 @@ local Library = {
     ShowToggleFrameInKeybinds = true,
 
     NotifyOnError = false,
-    ShowCustomCursor = true,
+    ShowCustomCursor = false,
     ForceCheckbox = false,
 
     CantDragForced = false,
@@ -426,7 +428,7 @@ local Templates = {
 
         CornerRadius = 4,
         NotifySide = "Right",
-        ShowCustomCursor = true,
+        ShowCustomCursor = false,
 
         Font = Enum.Font.Code,
         ToggleKeybind = Enum.KeyCode.RightControl,
@@ -502,6 +504,14 @@ local Templates = {
         Side = 1,
         Name = nil,
         PopOut = true,
+    },
+    List = {
+        Name = "List",
+        IconName = nil,
+        Height = 240,
+        Visible = true,
+        Collapsed = false,
+        DisableCollapsing = false,
     },
     Dialog = {
         Title = "Dialog",
@@ -621,6 +631,15 @@ local Templates = {
         Clone = true,
         AutoFocus = true,
         Interactive = false,
+        Clickable = false,
+        ToggleSelection = false,
+        Selected = false,
+        Callback = function()
+            setthreadidentity(8)
+        end,
+        Text = nil,
+        TextSize = 14,
+        RichText = true,
         Height = 200,
         Visible = true,
     },
@@ -979,6 +998,58 @@ local function MatchesSearch(ElementInfo, Search: string, ForceMatch: boolean?):
     return false
 end
 
+local function ApplySearchToList(List, Search: string, ForceVisible: boolean?): (number, number)
+    setthreadidentity(8)
+    local ListMatches = ForceVisible or TryFuzzyMatch(List.Text, Search)
+    local VisibleElements = 0
+    local BestScore = FuzzyMatchScore(List.Text, Search)
+
+    for _, ElementInfo in List.Elements do
+        if ElementInfo.Type == "Divider" then
+            ElementInfo.Holder.Visible = false
+            continue
+        end
+
+        local Visible = false
+        if ElementInfo.SubButton then
+            local MainVisible = ElementInfo.Visible and MatchesSearch(ElementInfo, Search, ListMatches)
+            local SubVisible = ElementInfo.SubButton.Visible
+                and MatchesSearch(ElementInfo.SubButton, Search, ListMatches)
+
+            ElementInfo.Base.Visible = MainVisible
+            ElementInfo.SubButton.Base.Visible = SubVisible
+            Visible = MainVisible or SubVisible
+        else
+            Visible = ElementInfo.Visible ~= false and MatchesSearch(ElementInfo, Search, ListMatches)
+        end
+
+        ElementInfo.Holder.Visible = Visible
+        if Visible then
+            VisibleElements += 1
+            BestScore = math.max(BestScore, FuzzyMatchScore(ElementInfo.Text, Search))
+        end
+    end
+
+    List.Holder.Visible = List.Visible ~= false and (ListMatches or VisibleElements > 0)
+    List:Resize()
+    return if List.Holder.Visible then math.max(1, VisibleElements) else 0, BestScore
+end
+
+local function RestoreList(List)
+    setthreadidentity(8)
+    for _, ElementInfo in List.Elements do
+        ElementInfo.Holder.Visible = ElementInfo.Visible ~= false
+
+        if ElementInfo.SubButton then
+            ElementInfo.Base.Visible = ElementInfo.Visible
+            ElementInfo.SubButton.Base.Visible = ElementInfo.SubButton.Visible
+        end
+    end
+
+    List.Holder.Visible = List.Visible ~= false
+    List:Resize()
+end
+
 local function GetPlayers(ExcludeLocalPlayer: boolean?)
     setthreadidentity(8)
     local PlayerList = Players:GetPlayers()
@@ -1037,7 +1108,12 @@ local function CheckDepbox(Box, Search, ForceVisible: boolean?)
     local BestScore = 0
 
     for _, ElementInfo in Box.Elements do
-        if ElementInfo.Type == "Divider" then
+        if ElementInfo.Type == "List" then
+            local ListVisible, ListScore = ApplySearchToList(ElementInfo, Search, ForceVisible)
+            VisibleElements += ListVisible
+            BestScore = math.max(BestScore, ListScore)
+            continue
+        elseif ElementInfo.Type == "Divider" then
             ElementInfo.Holder.Visible = false
             continue
         elseif ElementInfo.SubButton then
@@ -1093,6 +1169,11 @@ end
 local function RestoreDepbox(Box)
     setthreadidentity(8)
     for _, ElementInfo in Box.Elements do
+        if ElementInfo.Type == "List" then
+            RestoreList(ElementInfo)
+            continue
+        end
+
         ElementInfo.Holder.Visible = ElementInfo.Visible ~= false
 
         if ElementInfo.SubButton then
@@ -1220,7 +1301,12 @@ local function ApplySearchToTab(Tab, Search)
 
         local VisibleElements = 0
         for _, ElementInfo in Groupbox.Elements do
-            if ElementInfo.Type == "Divider" then
+            if ElementInfo.Type == "List" then
+                local ListVisible, ListScore = ApplySearchToList(ElementInfo, Search, GroupboxMatches)
+                VisibleElements += ListVisible
+                BestScore = math.max(BestScore, ListScore)
+                continue
+            elseif ElementInfo.Type == "Divider" then
                 ElementInfo.Holder.Visible = false
                 continue
             elseif ElementInfo.SubButton then
@@ -1293,7 +1379,13 @@ local function ApplySearchToTab(Tab, Search)
             BestScore = math.max(BestScore, SubScore)
 
             for _, ElementInfo in SubTab.Elements do
-                if ElementInfo.Type == "Divider" then
+                if ElementInfo.Type == "List" then
+                    local ListVisible, ListScore = ApplySearchToList(ElementInfo, Search, SubTabMatches)
+                    VisibleElements[SubTab] += ListVisible
+                    SubScore = math.max(SubScore, ListScore)
+                    BestScore = math.max(BestScore, ListScore)
+                    continue
+                elseif ElementInfo.Type == "Divider" then
                     ElementInfo.Holder.Visible = false
                     continue
                 elseif ElementInfo.SubButton then
@@ -1393,6 +1485,11 @@ local function ResetTab(Tab)
 
     for _, Groupbox in Tab.Groupboxes do
         for _, ElementInfo in Groupbox.Elements do
+            if ElementInfo.Type == "List" then
+                RestoreList(ElementInfo)
+                continue
+            end
+
             ElementInfo.Holder.Visible = ElementInfo.Visible ~= false
 
             if ElementInfo.SubButton then
@@ -1417,6 +1514,11 @@ local function ResetTab(Tab)
     for _, Tabbox in Tab.Tabboxes do
         for _, SubTab in Tabbox.Tabs do
             for _, ElementInfo in SubTab.Elements do
+                if ElementInfo.Type == "List" then
+                    RestoreList(ElementInfo)
+                    continue
+                end
+
                 ElementInfo.Holder.Visible = ElementInfo.Visible ~= false
 
                 if ElementInfo.SubButton then
@@ -6565,6 +6667,7 @@ do
     end
 end
 
+local BaseList = {}
 local BaseGroupbox = {}
 do
     local Funcs = {}
@@ -10218,6 +10321,1086 @@ do
         return Dropdown
     end
 
+    function Funcs:AddESPPreview(Idx: string, _Info: { [string]: any }?): any
+        setthreadidentity(8)
+        assert(type(Idx) == "string" and Options[Idx] == nil, "ESP preview requires a unique option index")
+        if self.Destroyed then return nil end
+
+        local Info = _Info or {}
+        local DrawingProvider = Info.Drawing or getgenv().Drawing
+        assert(DrawingProvider and type(DrawingProvider.new) == "function", "Load Z-WareDrawing.lua before AddESPPreview")
+        local Groupbox = self
+        local Height = math.max(300, Info.Height or 500)
+        local Sides = { "Left", "Top", "Right", "Bottom" }
+        local Accent = Color3.fromRGB(0, 218, 149)
+        local Preview = {
+            Type = "ESPPreview", Destroyed = false, Visible = Info.Visible ~= false,
+            Connections = {}, Items = {}, ItemOrder = {}, Value = {},
+            Callback = Info.Callback, Changed = nil, Team = "Enemies",
+            Data = { Name = "NEVERLOSE", Health = 65, MaxHealth = 100, Distance = 25, Ammo = 18, MaxAmmo = 30, Weapon = "AK-47", HitChance = 78 },
+            ModelColor = Info.ModelColor or Color3.fromRGB(190, 194, 201),
+            ModelTransparency = 0, ModelStyle = "Solid", Rotation = 0, Zoom = 1,
+        }
+        local Holder = New("Frame", {
+            Name = Idx, BackgroundColor3 = Color3.fromRGB(15, 16, 21),
+            Size = UDim2.new(1, 0, 0, Height), Visible = Preview.Visible, Parent = Groupbox.Container,
+        })
+        New("UICorner", { CornerRadius = UDim.new(0, 8), Parent = Holder })
+        local Toolbar = New("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, -16, 0, 30), Position = UDim2.fromOffset(8, 7), Parent = Holder })
+        local Stage = New("Frame", {
+            BackgroundTransparency = 1, ClipsDescendants = true,
+            Position = UDim2.fromOffset(0, 42), Size = UDim2.new(1, 0, 1, -66), Parent = Holder,
+        })
+        local ViewportFrame = New("ViewportFrame", {
+            BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+            Ambient = Color3.fromRGB(185, 185, 195), LightColor = Color3.new(1, 1, 1),
+            LightDirection = Vector3.new(-1, -1, -1), ZIndex = 1, Parent = Stage,
+        })
+        local HoverLayer = New("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 2, Parent = Stage })
+        local DrawingClip = New("Frame", { BackgroundTransparency = 1, ClipsDescendants = true, Size = UDim2.fromScale(1, 1), ZIndex = 3, Parent = Stage })
+        local Hint = New("TextLabel", {
+            BackgroundTransparency = 1, Position = UDim2.new(0, 6, 1, -23), Size = UDim2.new(1, -12, 0, 18),
+            Text = "Drag items · Right click to edit · Drag model to rotate", TextSize = 10,
+            TextColor3 = Color3.fromRGB(113, 117, 130), TextTruncate = Enum.TextTruncate.AtEnd, Parent = Holder,
+        })
+        local World = Instance.new("WorldModel")
+        World.Parent = ViewportFrame
+        local Camera = Instance.new("Camera")
+        Camera.FieldOfView = 35
+        Camera.Parent = ViewportFrame
+        ViewportFrame.CurrentCamera = Camera
+
+        local function Connect(signal: RBXScriptSignal, callback: (...any) -> ()): RBXScriptConnection
+            local connection = signal:Connect(function(...: any)
+                setthreadidentity(8)
+                callback(...)
+            end)
+            table.insert(Preview.Connections, connection)
+            return connection
+        end
+
+        local function Button(parent: Instance, text: string, position: UDim2, size: UDim2): TextButton
+            local button = New("TextButton", {
+                BackgroundColor3 = Color3.fromRGB(26, 27, 35), BackgroundTransparency = 0.25,
+                Position = position, Size = size, Text = text, TextSize = 12, Parent = parent,
+            })
+            New("UICorner", { CornerRadius = UDim.new(0, 5), Parent = button })
+            return button
+        end
+
+        local EnemyButton = Button(Toolbar, "Enemies", UDim2.fromOffset(0, 0), UDim2.new(0.37, -3, 1, 0))
+        local TeamButton = Button(Toolbar, "Allies", UDim2.new(0.37, 2, 0, 0), UDim2.new(0.25, -4, 1, 0))
+        local ItemsButton = Button(Toolbar, "Items", UDim2.new(0.62, 2, 0, 0), UDim2.new(0.23, -4, 1, 0))
+        local ExpandButton = Button(Toolbar, "+", UDim2.new(0.85, 2, 0, 0), UDim2.new(0.15, -2, 1, 0))
+        EnemyButton.TextColor3 = Accent
+
+        local function CreateBlankR6(): Model
+            local model = Instance.new("Model")
+            model.Name = "R6 Dummy blank"
+            local definitions = {
+                { "HumanoidRootPart", Vector3.new(2, 2, 1), Vector3.zero },
+                { "Torso", Vector3.new(2, 2, 1), Vector3.zero },
+                { "Head", Vector3.new(2, 1, 1), Vector3.new(0, 1.5, 0) },
+                { "Left Arm", Vector3.new(1, 2, 1), Vector3.new(-1.5, 0, 0) },
+                { "Right Arm", Vector3.new(1, 2, 1), Vector3.new(1.5, 0, 0) },
+                { "Left Leg", Vector3.new(1, 2, 1), Vector3.new(-0.5, -2, 0) },
+                { "Right Leg", Vector3.new(1, 2, 1), Vector3.new(0.5, -2, 0) },
+            }
+            for _, definition in definitions do
+                local part = Instance.new("Part")
+                part.Name, part.Size = definition[1], definition[2]
+                part.CFrame = CFrame.new(definition[3])
+                part.Anchored, part.CanCollide, part.CastShadow = true, false, false
+                part.TopSurface, part.BottomSurface = Enum.SurfaceType.Smooth, Enum.SurfaceType.Smooth
+                part.Color = Preview.ModelColor
+                part.Transparency = if part.Name == "HumanoidRootPart" then 1 else 0
+                part.Parent = model
+            end
+            local head = model:FindFirstChild("Head")
+            local mesh = Instance.new("SpecialMesh")
+            mesh.MeshType, mesh.Scale, mesh.Parent = Enum.MeshType.Head, Vector3.new(1.25, 1.25, 1.25), head
+            local humanoid = Instance.new("Humanoid")
+            humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+            humanoid.RequiresNeck = false
+            humanoid.Parent = model
+            model.PrimaryPart = model:FindFirstChild("HumanoidRootPart")
+            for _, joint in {
+                { "RootJoint", "HumanoidRootPart", "Torso", Vector3.zero, Vector3.zero },
+                { "Neck", "Torso", "Head", Vector3.new(0, 1, 0), Vector3.new(0, -0.5, 0) },
+                { "Left Shoulder", "Torso", "Left Arm", Vector3.new(-1, 0.5, 0), Vector3.new(0.5, 0.5, 0) },
+                { "Right Shoulder", "Torso", "Right Arm", Vector3.new(1, 0.5, 0), Vector3.new(-0.5, 0.5, 0) },
+                { "Left Hip", "Torso", "Left Leg", Vector3.new(-0.5, -1, 0), Vector3.new(0, 1, 0) },
+                { "Right Hip", "Torso", "Right Leg", Vector3.new(0.5, -1, 0), Vector3.new(0, 1, 0) },
+            } do
+                local motor = Instance.new("Motor6D")
+                motor.Name = joint[1]
+                motor.Part0, motor.Part1 = model:FindFirstChild(joint[2]), model:FindFirstChild(joint[3])
+                motor.C0, motor.C1, motor.Parent = CFrame.new(joint[4]), CFrame.new(joint[5]), motor.Part0
+            end
+            return model
+        end
+
+        local Model = CreateBlankR6()
+        Model.Parent = World
+        local ModelParts = {}
+        local BasePivot = CFrame.new()
+        local ModelSize = Vector3.new(4, 5, 1)
+        local ModelCenter = Vector3.new(0, -0.5, 0)
+        local Drag = nil
+        local Pointer = nil
+        local Hovered = nil
+        local Selected = nil
+        local PopupPoint = Vector2.zero
+        local Expanded = false
+        local OriginalParent = Holder.Parent
+        local Fullscreen = nil
+        local SuppressCallback = false
+        local RefreshSettings: () -> ()
+        local RefreshChips: () -> ()
+        local RebuildChips: (() -> ())?
+        local SettingsMenu: any
+        local ItemsMenu: any
+
+        local function ReadModel(): ()
+            table.clear(ModelParts)
+            for _, descendant in Model:GetDescendants() do
+                if descendant:IsA("Script") or descendant:IsA("LocalScript") then
+                    descendant:Destroy()
+                elseif descendant:IsA("BasePart") and descendant.Name == "HumanoidRootPart" then
+                    descendant.Anchored, descendant.CanCollide, descendant.Transparency = true, false, 1
+                elseif descendant:IsA("BasePart") then
+                    descendant.Anchored, descendant.CanCollide = true, false
+                    table.insert(ModelParts, descendant)
+                end
+            end
+            local bounds, size = Model:GetBoundingBox()
+            ModelSize, ModelCenter, BasePivot = size, bounds.Position, Model:GetPivot()
+        end
+
+        local function ApplyModel(): ()
+            for _, part in ModelParts do
+                part.Color = Preview.ModelColor
+                part.Material = if Preview.ModelStyle == "Neon" then Enum.Material.Neon else Enum.Material.SmoothPlastic
+                part.Transparency = Preview.ModelTransparency
+            end
+        end
+
+        local function Scale(): number
+            return math.max(0.01, Holder.AbsoluteSize.Y / Height)
+        end
+
+        local function MousePoint(): Vector2
+            local inset = GuiService:GetGuiInset()
+            return Vector2.new(Mouse.X, Mouse.Y)
+        end
+
+        local function Contains(rect: any, point: Vector2): boolean
+            return rect ~= nil and point.X >= rect.X and point.X <= rect.X + rect.Width
+                and point.Y >= rect.Y and point.Y <= rect.Y + rect.Height
+        end
+
+        local function IsShown(): boolean
+            if Preview.Destroyed or Library.Unloaded or not Preview.Visible or Library.Toggled == false then return false end
+            local ancestor: Instance? = Holder
+            while ancestor do
+                if ancestor:IsA("GuiObject") and not ancestor.Visible then return false end
+                if ancestor:IsA("ScreenGui") and not ancestor.Enabled then return false end
+                ancestor = ancestor.Parent
+            end
+            return Holder:IsDescendantOf(ScreenGui) and Stage.AbsoluteSize.X > 5 and Stage.AbsoluteSize.Y > 5
+        end
+
+        local function Notify(itemId: string?): ()
+            Preview.Value = Preview:GetConfig()
+            if SuppressCallback then return end
+            Library:SafeCallback(Preview.Callback, Preview.Value, itemId, Preview)
+            Library:SafeCallback(Preview.Changed, Preview.Value, itemId, Preview)
+        end
+
+        local function CreateDrawing(item: any, key: string, className: string): any
+            if item.Drawings[key] then return item.Drawings[key] end
+            local object = DrawingProvider.new(className)
+            object.Visible = false
+            local frame = if type(object) == "table" then rawget(object, "_frame") else nil
+            if typeof(frame) == "Instance" and frame:IsA("GuiObject") then
+                frame.Parent = DrawingClip
+                item.UsesGui = true
+            end
+            item.Drawings[key] = object
+            return object
+        end
+
+        local function Draw(item: any, key: string, className: string, properties: { [string]: any }): any
+            local object = CreateDrawing(item, key, className)
+            local scale = if item.UsesGui then Scale() else 1
+            local origin = if item.UsesGui then Stage.AbsolutePosition else -select(1, GuiService:GetGuiInset())
+            for property, value in properties do
+                if property == "Position" or property == "From" or property == "To" then
+                    object[property] = (value - origin) / scale
+                elseif property == "Size" and typeof(value) == "Vector2" then
+                    object.Size = value / scale
+                elseif property == "Size" or property == "Thickness" then
+                    object[property] = value / scale
+                else
+                    object[property] = value
+                end
+            end
+            object.Transparency = 1 - item.Transparency
+            object.Visible = true
+            return object
+        end
+
+        local function SetHover(item: any): ()
+            if Hovered == item then return end
+            if Hovered then
+                if Hovered.Tween then Hovered.Tween:Cancel(); Hovered.Tween:Destroy() end
+                Hovered.Tween = TweenService:Create(Hovered.Hover, TweenInfo.new(0.16), { BackgroundTransparency = 1 })
+                Hovered.Tween:Play()
+            end
+            Hovered = item
+            if item then
+                if item.Tween then item.Tween:Cancel(); item.Tween:Destroy() end
+                item.Tween = TweenService:Create(item.Hover, TweenInfo.new(0.16), { BackgroundTransparency = 0.83 })
+                item.Tween:Play()
+            end
+        end
+
+        function Preview:AddItem(itemId: string, definition: { [string]: any }): any
+            assert(type(itemId) == "string" and self.Items[itemId] == nil, "Duplicate ESP item")
+            local item = {
+                Id = itemId, Label = definition.Label or itemId, Group = definition.Group or "Flags",
+                Kind = definition.Kind or "Text", Text = definition.Text or definition.Label or itemId,
+                Enabled = definition.Enabled == true, Side = definition.Side or "Right",
+                Order = definition.Order or (#self.ItemOrder + 1), Color = definition.Color or Color3.fromRGB(224, 226, 232),
+                Transparency = definition.Transparency or 0, Size = definition.Size or 12,
+                Outline = definition.Outline ~= false, Background = definition.Background == true,
+                BackgroundColor = definition.BackgroundColor or Color3.fromRGB(20, 22, 29),
+                Thickness = definition.Thickness or 2, Format = "Absolute", Drawings = {},
+                Hover = New("Frame", { BackgroundColor3 = Accent, BackgroundTransparency = 1, Visible = false, ZIndex = 2, Parent = HoverLayer }),
+            }
+            assert(table.find(Sides, item.Side), "Invalid ESP item side")
+            New("UICorner", { CornerRadius = UDim.new(0, 3), Parent = item.Hover })
+            self.Items[itemId] = item
+            table.insert(self.ItemOrder, itemId)
+            if RebuildChips then RebuildChips() end
+            if RefreshChips then RefreshChips() end
+            if self.GetConfig then Notify(itemId) end
+            return item
+        end
+
+        local Definitions = {
+            { "Box", "Bounding Box", "Main", "Box", "Top", "", false },
+            { "Name", "Name", "Main", "Text", "Top", "NEVERLOSE", true },
+            { "Distance", "Distance", "Main", "Text", "Top", "25 m", true },
+            { "Health", "Health Bar", "Main", "Bar", "Left", "", true },
+            { "Ammo", "Ammo Bar", "Main", "Bar", "Bottom", "", false },
+            { "Skeleton", "Skeleton", "Main", "Skeleton", "Top", "", false },
+            { "Unarmored", "Unarmored", "Flags", "Text", "Right", "NA", true },
+            { "Defuser", "Defuser", "Flags", "Text", "Right", "KIT", true },
+            { "Blind", "Blind", "Flags", "Text", "Right", "BLIND", true },
+            { "Scoped", "Scoped", "Flags", "Text", "Right", "ZOOM", true },
+            { "Reload", "Reload", "Flags", "Text", "Right", "RELOAD", true },
+            { "Immunity", "Immunity", "Flags", "Text", "Right", "IMMUNE", true },
+            { "Slowed", "Slowed", "Flags", "Text", "Right", "SLOW", true },
+            { "Vulnerable", "Vulnerable", "Flags", "Text", "Right", "VULN", true },
+            { "Bomb", "Bomb", "Flags", "Text", "Right", "BOMB", false },
+            { "Hostage", "Hostage", "Flags", "Text", "Right", "HOSTAGE", false },
+            { "Defuse", "Defuse", "Flags", "Text", "Right", "DEFUSE", true },
+            { "PinPulled", "Pin Pulled", "Flags", "Text", "Right", "PIN", true },
+            { "Money", "Money", "Flags", "Text", "Right", "$16000", false },
+            { "Priority", "Order Priority", "Flags", "Text", "Right", "SIM", true },
+            { "Delay", "Delay", "Flags", "Text", "Right", "10 MS", true },
+            { "WeaponText", "Text", "Weapon", "Text", "Bottom", "AK-47", false },
+            { "WeaponIcon", "Icon", "Weapon", "Icon", "Bottom", "Rifle", true },
+            { "Readiness", "Readiness Bar", "Weapon", "Bar", "Bottom", "", true },
+            { "WeaponBomb", "Bomb", "Weapon", "Icon", "Left", "Bomb", false },
+            { "WeaponDefuser", "Defuser", "Weapon", "Icon", "Left", "Kit", false },
+            { "Taser", "Taser", "Weapon", "Icon", "Left", "Taser", false },
+            { "HitChance", "Hit Chance", "Aimbot", "Text", "Top", "78%", false },
+            { "Hitboxes", "Hitboxes", "Aimbot", "Hitboxes", "Top", "", false },
+        }
+        for index, definition in Definitions do
+            local item = Preview:AddItem(definition[1], {
+                Label = definition[2], Group = definition[3], Kind = definition[4], Side = definition[5],
+                Text = definition[6], Enabled = definition[7], Order = index,
+                Size = if definition[3] == "Flags" then 10 else 12,
+            })
+            if item.Group == "Flags" then
+                item.Color = if index % 3 == 0 then Color3.fromRGB(255, 91, 113)
+                    elseif index % 3 == 1 then Color3.fromRGB(255, 207, 72) else Color3.fromRGB(90, 178, 255)
+            elseif item.Id == "Health" then item.Color = Accent
+            elseif item.Kind == "Bar" then item.Color = Color3.fromRGB(255, 201, 103) end
+        end
+        Preview.Items.Name.Order, Preview.Items.Distance.Order = 3, 2
+
+        function Preview:GetConfig(): { [string]: any }
+            local config = { Version = 1, Items = {}, ModelColor = self.ModelColor:ToHex(), ModelTransparency = self.ModelTransparency, ModelStyle = self.ModelStyle }
+            for _, itemId in self.ItemOrder do
+                local item = self.Items[itemId]
+                config.Items[itemId] = {
+                    Enabled = item.Enabled, Side = item.Side, Order = item.Order, Color = item.Color:ToHex(),
+                    Transparency = item.Transparency, Size = item.Size, Outline = item.Outline,
+                    Background = item.Background, BackgroundColor = item.BackgroundColor:ToHex(),
+                    Thickness = item.Thickness, Format = item.Format, Text = item.Text,
+                }
+            end
+            return config
+        end
+
+        function Preview:SetItem(itemId: string, properties: { [string]: any }): ()
+            local item = assert(self.Items[itemId], `Unknown ESP item: {itemId}`)
+            for property, value in properties do
+                if property == "Side" then
+                    assert(table.find(Sides, value), "Side must be Left, Top, Right or Bottom")
+                    item.Side = value
+                elseif property == "Color" or property == "BackgroundColor" then
+                    assert(typeof(value) == "Color3", "ESP colors must be Color3 values")
+                    item[property] = value
+                elseif property == "Transparency" then item.Transparency = math.clamp(value, 0, 1)
+                elseif property == "Size" then item.Size = math.clamp(value, 8, 24)
+                elseif property == "Thickness" then item.Thickness = math.clamp(value, 1, 8)
+                elseif property == "Order" then item.Order = math.max(1, value)
+                elseif property == "Enabled" or property == "Outline" or property == "Background" then
+                    assert(type(value) == "boolean", "ESP switches must be booleans")
+                    item[property] = value
+                elseif property == "Text" then item.Text = tostring(value)
+                elseif property == "Format" then
+                    assert(value == "Absolute" or value == "Percent", "Invalid value format")
+                    item.Format = value
+                end
+            end
+            if RefreshChips then RefreshChips() end
+            if Selected == item and SettingsMenu and SettingsMenu.Active then RefreshSettings() end
+            Notify(itemId)
+        end
+
+        function Preview:SetValue(config: { [string]: any }): ()
+            assert(type(config) == "table", "Expected an ESP configuration")
+            SuppressCallback = true
+            local success, message = pcall(function()
+                if config.ModelColor then self.ModelColor = Color3.fromHex(config.ModelColor) end
+                if config.ModelTransparency then self.ModelTransparency = math.clamp(config.ModelTransparency, 0, 1) end
+                if config.ModelStyle == "Solid" or config.ModelStyle == "Neon" then self.ModelStyle = config.ModelStyle end
+                for itemId, properties in config.Items or {} do
+                    if not self.Items[itemId] then continue end
+                    local values = table.clone(properties)
+                    if type(values.Color) == "string" then values.Color = Color3.fromHex(values.Color) end
+                    if type(values.BackgroundColor) == "string" then values.BackgroundColor = Color3.fromHex(values.BackgroundColor) end
+                    self:SetItem(itemId, values)
+                end
+            end)
+            SuppressCallback = false
+            ApplyModel()
+            assert(success, message)
+            Notify(nil)
+        end
+
+        function Preview:OnChanged(callback: (...any) -> ()): ()
+            self.Changed = callback
+        end
+
+        function Preview:SetData(data: { [string]: any }): ()
+            for key, value in data do
+                if self.Data[key] == nil then continue end
+                if type(self.Data[key]) == "number" then
+                    assert(type(value) == "number" and value == value and math.abs(value) < math.huge, "Expected a finite preview value")
+                else
+                    assert(type(value) == "string", "Expected preview text")
+                end
+                self.Data[key] = value
+            end
+        end
+
+        function Preview:SetModelColor(color: Color3, _transparency: number?): ()
+            assert(typeof(color) == "Color3", "Expected a model Color3")
+            self.ModelColor = color
+            if _transparency then self.ModelTransparency = math.clamp(_transparency, 0, 1) end
+            ApplyModel()
+            Notify(nil)
+        end
+
+        function Preview:SetModelStyle(style: string): ()
+            assert(style == "Solid" or style == "Neon", "Model style must be Solid or Neon")
+            self.ModelStyle = style
+            ApplyModel()
+            Notify(nil)
+        end
+
+        function Preview:SetObject(object: Model): ()
+            assert(typeof(object) == "Instance" and object:IsA("Model"), "Expected an R6 model")
+            assert(object:FindFirstChild("Torso") and object:FindFirstChild("Head"), "Expected R6 Torso and Head")
+            assert(object.Archivable, "Preview model must be Archivable")
+            local replacement = object:Clone()
+            Model:Destroy()
+            Model = replacement
+            Model.Parent = World
+            ReadModel()
+            ApplyModel()
+            self.Object = Model
+        end
+
+        function Preview:MoveItem(itemId: string, side: string, _index: number?): ()
+            local item = assert(self.Items[itemId], "Unknown ESP item")
+            assert(table.find(Sides, side), "Invalid ESP item side")
+            local ordered = {}
+            for _, otherId in self.ItemOrder do
+                local other = self.Items[otherId]
+                if other ~= item and other.Enabled and other.Side == side
+                    and (other.Kind == "Bar") == (item.Kind == "Bar")
+                    and other.Kind ~= "Box" and other.Kind ~= "Skeleton" and other.Kind ~= "Hitboxes"
+                then table.insert(ordered, other) end
+            end
+            table.sort(ordered, function(first: any, second: any): boolean
+                if first.Order == second.Order then return first.Id < second.Id end
+                return first.Order < second.Order
+            end)
+            table.insert(ordered, math.clamp(_index or (#ordered + 1), 1, #ordered + 1), item)
+            item.Side = side
+            for index, other in ordered do other.Order = index end
+            Notify(itemId)
+        end
+
+        local Defaults = Preview:GetConfig()
+        local Profiles = {}
+        function Preview:Reset(): ()
+            self:SetValue(Defaults)
+            self.Rotation, self.Zoom = 0, 1
+        end
+
+        local function MenuOffset(): { number }
+            local scale = Library.DPIScale
+            local size = ScreenGui.AbsoluteSize
+            return {
+                math.clamp(PopupPoint.X, 8, math.max(8, size.X - 344 * scale)) - Holder.AbsolutePosition.X,
+                math.clamp(PopupPoint.Y, 8, math.max(8, size.Y - 548 * scale)) - Holder.AbsolutePosition.Y,
+            }
+        end
+        local function MenuSize(): UDim2
+            return UDim2.fromOffset(336, math.min(540, math.max(120, ScreenGui.AbsoluteSize.Y / Library.DPIScale - 24)))
+        end
+        SettingsMenu = Library:AddContextMenu(Holder, MenuSize, MenuOffset, nil, nil, false, nil, "Dropdown")
+        ItemsMenu = Library:AddContextMenu(Holder, MenuSize, MenuOffset, nil, nil, false, nil, "Dropdown")
+        local Settings = New("ScrollingFrame", {
+            BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), CanvasSize = UDim2.fromOffset(0, 540),
+            ScrollBarThickness = 3, ScrollBarImageColor3 = Accent, Parent = SettingsMenu.Menu,
+        })
+        local ItemList = New("ScrollingFrame", {
+            BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), CanvasSize = UDim2.fromOffset(0, 550),
+            ScrollBarThickness = 3, ScrollBarImageColor3 = Accent, Parent = ItemsMenu.Menu,
+        })
+        local SettingsTitle = New("TextLabel", {
+            BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 8), Size = UDim2.fromOffset(278, 22),
+            Text = "Element", TextSize = 14, TextXAlignment = Enum.TextXAlignment.Left, Parent = Settings,
+        })
+        local CloseSettings = Button(Settings, "×", UDim2.fromOffset(302, 8), UDim2.fromOffset(22, 22))
+        Connect(CloseSettings.Activated, function(): () SettingsMenu:Close() end)
+        local Saturation = Button(Settings, "", UDim2.fromOffset(12, 40), UDim2.fromOffset(312, 174))
+        Saturation.BackgroundTransparency = 0
+        local White = New("Frame", { BackgroundColor3 = Color3.new(1, 1, 1), Size = UDim2.fromScale(1, 1), Parent = Saturation })
+        New("UICorner", { CornerRadius = UDim.new(0, 5), Parent = White })
+        New("UIGradient", { Transparency = NumberSequence.new(0, 1), Parent = White })
+        local Black = New("Frame", { BackgroundColor3 = Color3.new(), Size = UDim2.fromScale(1, 1), Parent = White })
+        New("UICorner", { CornerRadius = UDim.new(0, 5), Parent = Black })
+        New("UIGradient", { Rotation = 90, Transparency = NumberSequence.new(1, 0), Parent = Black })
+        local ColorCursor = New("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), BackgroundTransparency = 1, Size = UDim2.fromOffset(10, 10), ZIndex = 5, Parent = Saturation })
+        New("UICorner", { CornerRadius = UDim.new(1, 0), Parent = ColorCursor })
+        New("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 2, Parent = ColorCursor })
+        local Hue = Button(Settings, "", UDim2.fromOffset(12, 226), UDim2.fromOffset(312, 9))
+        Hue.BackgroundColor3, Hue.BackgroundTransparency = Color3.new(1, 1, 1), 0
+        local hueKeys = {}
+        for index = 0, 6 do table.insert(hueKeys, ColorSequenceKeypoint.new(index / 6, Color3.fromHSV(index / 6, 1, 1))) end
+        New("UIGradient", { Color = ColorSequence.new(hueKeys), Parent = Hue })
+        local HueCursor = New("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0, 0.5), Size = UDim2.fromOffset(5, 15), BackgroundColor3 = Color3.new(1, 1, 1), Parent = Hue })
+        New("UICorner", { CornerRadius = UDim.new(0, 2), Parent = HueCursor })
+        local Alpha = Button(Settings, "", UDim2.fromOffset(12, 249), UDim2.fromOffset(312, 9))
+        Alpha.BackgroundTransparency = 0
+        local AlphaGradient = New("UIGradient", { Color = ColorSequence.new(Color3.fromRGB(55, 55, 64), Accent), Parent = Alpha })
+        local AlphaCursor = New("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(1, 0.5), Size = UDim2.fromOffset(5, 15), BackgroundColor3 = Color3.new(1, 1, 1), Parent = Alpha })
+        New("UICorner", { CornerRadius = UDim.new(0, 2), Parent = AlphaCursor })
+        local Hex = New("TextBox", { BackgroundColor3 = Color3.fromRGB(31, 32, 41), Position = UDim2.fromOffset(12, 272), Size = UDim2.fromOffset(212, 25), TextSize = 12, ClearTextOnFocus = false, Parent = Settings })
+        New("UICorner", { CornerRadius = UDim.new(0, 4), Parent = Hex })
+        local Opacity = New("TextBox", { BackgroundColor3 = Color3.fromRGB(31, 32, 41), Position = UDim2.fromOffset(232, 272), Size = UDim2.fromOffset(92, 25), TextSize = 12, ClearTextOnFocus = false, Parent = Settings })
+        New("UICorner", { CornerRadius = UDim.new(0, 4), Parent = Opacity })
+        local BackgroundButton = Button(Settings, "", UDim2.fromOffset(12, 309), UDim2.fromOffset(312, 26))
+        local OutlineButton = Button(Settings, "", UDim2.fromOffset(12, 341), UDim2.fromOffset(312, 26))
+        local SideButton = Button(Settings, "", UDim2.fromOffset(12, 373), UDim2.fromOffset(312, 26))
+        local FormatButton = Button(Settings, "", UDim2.fromOffset(12, 405), UDim2.fromOffset(312, 26))
+        local Smaller = Button(Settings, "−", UDim2.fromOffset(12, 437), UDim2.fromOffset(34, 26))
+        local SizeLabel = New("TextLabel", { BackgroundTransparency = 1, Position = UDim2.fromOffset(48, 437), Size = UDim2.fromOffset(128, 26), TextSize = 12, Parent = Settings })
+        local Larger = Button(Settings, "+", UDim2.fromOffset(178, 437), UDim2.fromOffset(34, 26))
+        local EnabledButton = Button(Settings, "", UDim2.fromOffset(220, 437), UDim2.fromOffset(104, 26))
+        local SampleText = New("TextBox", { BackgroundColor3 = Color3.fromRGB(31, 32, 41), Position = UDim2.fromOffset(12, 475), Size = UDim2.fromOffset(312, 26), PlaceholderText = "Preview text", TextSize = 12, ClearTextOnFocus = false, Parent = Settings })
+        New("UICorner", { CornerRadius = UDim.new(0, 4), Parent = SampleText })
+        local ResetItem = Button(Settings, "Reset element", UDim2.fromOffset(12, 509), UDim2.fromOffset(312, 24))
+        local EditHue, EditSaturation, EditValue = 0, 1, 1
+
+        RefreshSettings = function(): ()
+            if not Selected then return end
+            EditHue, EditSaturation, EditValue = Selected.Color:ToHSV()
+            SettingsTitle.Text = Selected.Label
+            Saturation.BackgroundColor3 = Color3.fromHSV(EditHue, 1, 1)
+            ColorCursor.Position = UDim2.fromScale(EditSaturation, 1 - EditValue)
+            HueCursor.Position = UDim2.fromScale(EditHue, 0.5)
+            AlphaCursor.Position = UDim2.fromScale(1 - Selected.Transparency, 0.5)
+            AlphaGradient.Color = ColorSequence.new(Color3.fromRGB(55, 55, 64), Selected.Color)
+            if not Hex:IsFocused() then Hex.Text = `#{Selected.Color:ToHex()}` end
+            if not Opacity:IsFocused() then Opacity.Text = `{math.floor((1 - Selected.Transparency) * 100 + 0.5)}%` end
+            BackgroundButton.Text = `Background                         {if Selected.Background then "ON" else "OFF"}`
+            OutlineButton.Text = `Shadow / outline                   {if Selected.Outline then "ON" else "OFF"}`
+            SideButton.Text = `Position                                  {Selected.Side} ›`
+            FormatButton.Text = `Format                                   {Selected.Format} ›`
+            SizeLabel.Text = if Selected.Kind == "Bar" or Selected.Kind == "Box" then `Thickness: {Selected.Thickness}` else `Size: {Selected.Size}`
+            EnabledButton.Text = if Selected.Enabled then "Enabled" else "Disabled"
+            EnabledButton.TextColor3 = if Selected.Enabled then Accent else Color3.fromRGB(140, 143, 153)
+            if not SampleText:IsFocused() then SampleText.Text = Selected.Text end
+        end
+
+        local function UpdatePicker(point: Vector2): ()
+            if not Selected or not Pointer then return end
+            local control = if Pointer == "Hue" then Hue elseif Pointer == "Alpha" then Alpha else Saturation
+            local relative = point - control.AbsolutePosition
+            local horizontal = math.clamp(relative.X / math.max(1, control.AbsoluteSize.X), 0, 1)
+            if Pointer == "Alpha" then Selected.Transparency = 1 - horizontal
+            elseif Pointer == "Hue" then EditHue = horizontal
+            else
+                EditSaturation = horizontal
+                EditValue = 1 - math.clamp(relative.Y / math.max(1, control.AbsoluteSize.Y), 0, 1)
+            end
+            if Pointer ~= "Alpha" then Selected.Color = Color3.fromHSV(EditHue, EditSaturation, EditValue) end
+            local preservedHue, preservedSaturation, preservedValue = EditHue, EditSaturation, EditValue
+            RefreshSettings()
+            EditHue, EditSaturation, EditValue = preservedHue, preservedSaturation, preservedValue
+            Saturation.BackgroundColor3 = Color3.fromHSV(EditHue, 1, 1)
+            ColorCursor.Position = UDim2.fromScale(EditSaturation, 1 - EditValue)
+            HueCursor.Position = UDim2.fromScale(EditHue, 0.5)
+            Notify(Selected.Id)
+        end
+        for name, control in { Saturation = Saturation, Hue = Hue, Alpha = Alpha } do
+            Connect(control.InputBegan, function(input: InputObject): ()
+                if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then return end
+                Pointer = name
+                UpdatePicker(if input.UserInputType == Enum.UserInputType.Touch then Vector2.new(input.Position.X, input.Position.Y) else MousePoint())
+            end)
+        end
+        Connect(Hex.FocusLost, function(): ()
+            if not Selected then return end
+            local value = string.gsub(Hex.Text, "#", "")
+            if string.match(value, "^%x%x%x%x%x%x$") then Preview:SetItem(Selected.Id, { Color = Color3.fromHex(value) }) end
+            RefreshSettings()
+        end)
+        Connect(Opacity.FocusLost, function(): ()
+            if not Selected then return end
+            local value = tonumber(string.gsub(Opacity.Text, "%%", ""))
+            if value then Preview:SetItem(Selected.Id, { Transparency = 1 - math.clamp(value, 0, 100) / 100 }) end
+            RefreshSettings()
+        end)
+        Connect(BackgroundButton.Activated, function(): () if Selected then Preview:SetItem(Selected.Id, { Background = not Selected.Background }) end end)
+        Connect(OutlineButton.Activated, function(): () if Selected then Preview:SetItem(Selected.Id, { Outline = not Selected.Outline }) end end)
+        Connect(SideButton.Activated, function(): ()
+            if Selected then Preview:SetItem(Selected.Id, { Side = Sides[(table.find(Sides, Selected.Side) or 1) % #Sides + 1] }) end
+        end)
+        Connect(FormatButton.Activated, function(): ()
+            if Selected then Preview:SetItem(Selected.Id, { Format = if Selected.Format == "Absolute" then "Percent" else "Absolute" }) end
+        end)
+        local function ChangeSize(amount: number): ()
+            if not Selected then return end
+            local field = if Selected.Kind == "Bar" or Selected.Kind == "Box" then "Thickness" else "Size"
+            Preview:SetItem(Selected.Id, { [field] = Selected[field] + amount })
+        end
+        Connect(Smaller.Activated, function(): () ChangeSize(-1) end)
+        Connect(Larger.Activated, function(): () ChangeSize(1) end)
+        Connect(EnabledButton.Activated, function(): () if Selected then Preview:SetItem(Selected.Id, { Enabled = not Selected.Enabled }) end end)
+        Connect(SampleText.FocusLost, function(): () if Selected then Preview:SetItem(Selected.Id, { Text = SampleText.Text }) end end)
+        Connect(ResetItem.Activated, function(): ()
+            if not Selected then return end
+            local values = table.clone(Defaults.Items[Selected.Id] or {})
+            if values.Color then values.Color = Color3.fromHex(values.Color) end
+            if values.BackgroundColor then values.BackgroundColor = Color3.fromHex(values.BackgroundColor) end
+            Preview:SetItem(Selected.Id, values)
+        end)
+
+        local Chips = {}
+        local ChipGroups = {}
+        local ChipConnections = {}
+        New("TextLabel", { BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 9), Size = UDim2.fromOffset(275, 22), Text = "ESP Items", TextSize = 15, TextXAlignment = Enum.TextXAlignment.Left, Parent = ItemList })
+        local CloseItems = Button(ItemList, "×", UDim2.fromOffset(302, 9), UDim2.fromOffset(22, 22))
+        Connect(CloseItems.Activated, function(): () ItemsMenu:Close() end)
+        local function BuildChips(): ()
+            for _, connection in ChipConnections do
+                connection:Disconnect()
+                local index = table.find(Preview.Connections, connection)
+                if index then table.remove(Preview.Connections, index) end
+            end
+            for _, group in ChipGroups do group:Destroy() end
+            table.clear(ChipConnections)
+            table.clear(ChipGroups)
+            table.clear(Chips)
+            local vertical = 43
+            for _, groupName in { "Main", "Flags", "Weapon", "Aimbot" } do
+                local group = New("Frame", { BackgroundColor3 = Color3.fromRGB(20, 21, 28), Position = UDim2.fromOffset(10, vertical), Size = UDim2.fromOffset(316, 100), Parent = ItemList })
+                table.insert(ChipGroups, group)
+                New("UICorner", { CornerRadius = UDim.new(0, 8), Parent = group })
+                New("UIStroke", { Color = Color3.fromRGB(36, 37, 46), Parent = group })
+                New("TextLabel", { BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 6), Size = UDim2.fromOffset(290, 20), Text = groupName, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left, Parent = group })
+                local horizontal, row = 12, 32
+                for _, itemId in Preview.ItemOrder do
+                    local item = Preview.Items[itemId]
+                    if item.Group ~= groupName then continue end
+                    local width = math.clamp(#item.Label * 6.4 + 20, 44, 150)
+                    if horizontal + width > 304 then horizontal, row = 12, row + 30 end
+                    local chip = Button(group, item.Label, UDim2.fromOffset(horizontal, row), UDim2.fromOffset(width, 24))
+                    local stroke = New("UIStroke", { Color = Accent, Transparency = 0.5, Parent = chip })
+                    Chips[itemId] = { Button = chip, Stroke = stroke }
+                    table.insert(ChipConnections, Connect(chip.Activated, function(): () Preview:SetItem(itemId, { Enabled = not item.Enabled }) end))
+                    table.insert(ChipConnections, Connect(chip.MouseButton2Click, function(): ()
+                        Selected, PopupPoint = item, MousePoint()
+                        RefreshSettings()
+                        SettingsMenu:Open()
+                    end))
+                    horizontal += width + 7
+                end
+                group.Size = UDim2.fromOffset(316, row + 34)
+                vertical += row + 44
+            end
+            ItemList.CanvasSize = UDim2.fromOffset(0, vertical + 6)
+        end
+        RebuildChips = BuildChips
+        RefreshChips = function(): ()
+            for itemId, chip in Chips do
+                local item = Preview.Items[itemId]
+                chip.Stroke.Transparency = if item.Enabled then 0.3 else 0.85
+                chip.Stroke.Color = if item.Enabled then Accent else Color3.fromRGB(57, 59, 71)
+                chip.Button.TextTransparency = if item.Enabled then 0 else 0.5
+            end
+        end
+        BuildChips()
+        RefreshChips()
+        Connect(ItemsButton.Activated, function(): ()
+            PopupPoint = ItemsButton.AbsolutePosition + Vector2.new(0, ItemsButton.AbsoluteSize.Y + 5)
+            ItemsMenu:Toggle()
+        end)
+        function Preview:SetTeam(team: string): ()
+            assert(team == "Enemies" or team == "Allies", "Expected Enemies or Allies")
+            if team == self.Team then return end
+            Profiles[self.Team] = self:GetConfig()
+            self.Team = team
+            self:SetValue(Profiles[team] or Defaults)
+            EnemyButton.TextColor3 = if team == "Enemies" then Accent else Library.Scheme.FontColor
+            TeamButton.TextColor3 = if team == "Allies" then Accent else Library.Scheme.FontColor
+            Notify(nil)
+        end
+        Connect(EnemyButton.Activated, function(): () Preview:SetTeam("Enemies") end)
+        Connect(TeamButton.Activated, function(): () Preview:SetTeam("Allies") end)
+
+        function Preview:SetExpanded(enabled: boolean): ()
+            if Expanded == enabled then return end
+            Expanded = enabled
+            SettingsMenu:Close()
+            ItemsMenu:Close()
+            if enabled then
+                Fullscreen = New("Frame", { BackgroundColor3 = Color3.fromRGB(11, 12, 17), BackgroundTransparency = 0.08, Size = UDim2.fromScale(1, 1), ZIndex = 19, Parent = ScreenGui })
+                Holder.Parent = Fullscreen
+                Holder.AnchorPoint = Vector2.new(0.5, 0.5)
+                Holder.Position = UDim2.fromScale(0.5, 0.5)
+                Holder.Size = UDim2.fromOffset(620, Height)
+                New("UIScale", { Scale = math.min(1.5, (ScreenGui.AbsoluteSize.Y - 32) / Height, (ScreenGui.AbsoluteSize.X - 32) / 620), Parent = Holder })
+            else
+                local scale = Holder:FindFirstChildOfClass("UIScale")
+                if scale then scale:Destroy() end
+                Holder.Parent, Holder.AnchorPoint, Holder.Position = OriginalParent, Vector2.zero, UDim2.fromOffset(0, 0)
+                Holder.Size = UDim2.new(1, 0, 0, Height)
+                if Fullscreen then Fullscreen:Destroy(); Fullscreen = nil end
+            end
+            ExpandButton.Text = if enabled then "−" else "+"
+            Groupbox:Resize()
+        end
+        Connect(ExpandButton.Activated, function(): () Preview:SetExpanded(not Expanded) end)
+
+        local function Project(position: Vector3): Vector2
+            local relative = Camera.CFrame:PointToObjectSpace(position)
+            local focal = Stage.AbsoluteSize.Y / (2 * math.tan(math.rad(Camera.FieldOfView / 2)))
+            local depth = math.max(0.01, -relative.Z)
+            return Stage.AbsolutePosition + Stage.AbsoluteSize / 2 + Vector2.new(relative.X, -relative.Y) * (focal / depth)
+        end
+
+        local function ModelRect(): any
+            local minimum, maximum = Vector2.new(math.huge, math.huge), Vector2.new(-math.huge, -math.huge)
+            for _, part in ModelParts do
+                for horizontal = -1, 1, 2 do
+                    for vertical = -1, 1, 2 do
+                        for depth = -1, 1, 2 do
+                            local point = Project(part.CFrame:PointToWorldSpace(part.Size * Vector3.new(horizontal, vertical, depth) / 2))
+                            minimum = Vector2.new(math.min(minimum.X, point.X), math.min(minimum.Y, point.Y))
+                            maximum = Vector2.new(math.max(maximum.X, point.X), math.max(maximum.Y, point.Y))
+                        end
+                    end
+                end
+            end
+            return { X = minimum.X, Y = minimum.Y, Width = maximum.X - minimum.X, Height = maximum.Y - minimum.Y }
+        end
+
+        local function TextFor(item: any): string
+            local data = Preview.Data
+            if item.Id == "Name" and item.Text == "NEVERLOSE" then return data.Name end
+            if item.Id == "Distance" and item.Text == "25 m" then return `{math.floor(data.Distance)} m` end
+            if item.Id == "WeaponText" and item.Text == "AK-47" then return data.Weapon end
+            if item.Id == "HitChance" and item.Text == "78%" then return `{math.floor(data.HitChance)}%` end
+            return item.Text
+        end
+
+        local function Measure(item: any): (number, number)
+            local scale = Scale()
+            if item.Kind == "Icon" then return item.Size * 4 * scale, (item.Size + 4) * scale end
+            local object = CreateDrawing(item, "Text", "Text")
+            object.Text = TextFor(item)
+            object.Font = 2
+            object.Size = item.Size * (if item.UsesGui then 1 else scale)
+            local bounds = object.TextBounds
+            return math.max(12, bounds.X * (if item.UsesGui then scale else 1)) + 8 * scale, (item.Size + 5) * scale
+        end
+
+        local function Layout(rect: any): ()
+            local scale = Scale()
+            for _, side in Sides do
+                local bars, labels = {}, {}
+                for _, itemId in Preview.ItemOrder do
+                    local item = Preview.Items[itemId]
+                    item.Hover.Visible = false
+                    if not item.Enabled or item.Side ~= side then continue end
+                    if item.Kind == "Box" or item.Kind == "Skeleton" or item.Kind == "Hitboxes" then
+                        item.Rect = table.clone(rect)
+                    elseif item.Kind == "Bar" then table.insert(bars, item)
+                    else table.insert(labels, item) end
+                end
+                local function Sort(first: any, second: any): boolean
+                    if first.Id == "Health" then return second.Id ~= "Health" end
+                    if second.Id == "Health" then return false end
+                    if first.Order == second.Order then return first.Id < second.Id end
+                    return first.Order < second.Order
+                end
+                table.sort(bars, Sort)
+                table.sort(labels, Sort)
+                local offset = 5 * scale
+                for _, item in bars do
+                    local thickness = (item.Thickness + 2) * scale
+                    local vertical = side == "Left" or side == "Right"
+                    item.Rect = {
+                        X = if side == "Left" then rect.X - offset - thickness elseif side == "Right" then rect.X + rect.Width + offset else rect.X,
+                        Y = if side == "Top" then rect.Y - offset - thickness elseif side == "Bottom" then rect.Y + rect.Height + offset else rect.Y,
+                        Width = if vertical then thickness else rect.Width, Height = if vertical then rect.Height else thickness,
+                    }
+                    offset += thickness + 4 * scale
+                    if item.Id == "Health" and not vertical then offset += 14 * scale end
+                end
+                local cursor = 0
+                local columnWidth = 0
+                for _, item in labels do
+                    local width, height = Measure(item)
+                    width = math.min(width, Stage.AbsoluteSize.X * 0.7)
+                    local vertical = side == "Left" or side == "Right"
+                    if vertical and cursor + height > rect.Height and cursor > 0 then
+                        offset += columnWidth + 5 * scale
+                        cursor, columnWidth = 0, 0
+                    end
+                    item.Rect = {
+                        X = if side == "Left" then rect.X - offset - width elseif side == "Right" then rect.X + rect.Width + offset else rect.X + (rect.Width - width) / 2,
+                        Y = if side == "Top" then rect.Y - offset - cursor - height elseif side == "Bottom" then rect.Y + rect.Height + offset + cursor else rect.Y + cursor,
+                        Width = width, Height = height,
+                    }
+                    cursor += height
+                    columnWidth = math.max(columnWidth, width)
+                end
+            end
+        end
+
+        local function Square(item: any, key: string, rect: any, color: Color3, filled: boolean, _thickness: number?): ()
+            Draw(item, key, "Square", { Position = Vector2.new(rect.X, rect.Y), Size = Vector2.new(rect.Width, rect.Height), Color = color, Filled = filled, Thickness = _thickness or Scale(), ZIndex = 2 })
+        end
+
+        local function Line(item: any, key: string, first: Vector2, second: Vector2, color: Color3): ()
+            if item.Kind == "Skeleton" then
+                item.HitLines = item.HitLines or {}
+                item.HitLines[key] = { first, second }
+            end
+            Draw(item, key, "Line", { From = first, To = second, Color = color, Thickness = item.Thickness * Scale(), ZIndex = 3 })
+        end
+
+        local function RenderItem(item: any): ()
+            local rect, scale = item.Rect, Scale()
+            if not rect then return end
+            local position = Vector2.new(rect.X, rect.Y)
+            if item.Background then Square(item, "Background", rect, item.BackgroundColor, true) end
+            if item.Kind == "Text" then
+                Draw(item, "Text", "Text", { Text = TextFor(item), Position = position + Vector2.new(rect.Width / 2, 1 * scale), Center = true, Color = item.Color, Size = item.Size * scale, Font = 2, Outline = item.Outline, ZIndex = 4 })
+            elseif item.Kind == "Bar" then
+                local health = item.Id == "Health"
+                local data = Preview.Data
+                local value = if health then data.Health elseif item.Id == "Ammo" then data.Ammo else 80
+                local maximum = if health then math.max(1, data.MaxHealth) elseif item.Id == "Ammo" then math.max(1, data.MaxAmmo) else 100
+                local ratio = math.clamp(value / maximum, 0, 1)
+                local vertical = item.Side == "Left" or item.Side == "Right"
+                Square(item, "Track", rect, Color3.fromRGB(36, 38, 47), true)
+                local segments = if health then 24 else 1
+                for index = 1, segments do
+                    local lower, upper = (index - 1) / segments, math.min(ratio, index / segments)
+                    if upper <= lower then continue end
+                    local fill = {
+                        X = rect.X + scale, Y = rect.Y + scale,
+                        Width = math.max(1, rect.Width - 2 * scale), Height = math.max(1, rect.Height - 2 * scale),
+                    }
+                    if vertical then
+                        fill.Y += (1 - upper) * (rect.Height - 2 * scale)
+                        fill.Height = math.max(1, (upper - lower) * (rect.Height - 2 * scale))
+                    else
+                        fill.X += lower * (rect.Width - 2 * scale)
+                        fill.Width = math.max(1, (upper - lower) * (rect.Width - 2 * scale))
+                    end
+                    Square(item, `Fill{index}`, fill, if health then Color3.fromRGB(255, 74, 86):Lerp(item.Color, upper) else item.Color, true)
+                end
+                if health then
+                    Draw(item, "Value", "Text", {
+                        Text = if item.Format == "Percent" then `{math.floor(ratio * 100)}%` else tostring(math.floor(value)),
+                        Position = position + Vector2.new(rect.Width / 2, if item.Side == "Bottom" then rect.Height + 2 * scale else -13 * scale), Center = true,
+                        Color = Color3.new(1, 1, 1), Size = 10 * scale, Font = 2, Outline = item.Outline, ZIndex = 4,
+                    })
+                end
+            elseif item.Kind == "Box" then
+                if item.Outline then Square(item, "Outline", rect, Color3.new(), false, (item.Thickness + 2) * scale) end
+                Square(item, "Box", rect, item.Color, false, item.Thickness * scale)
+            elseif item.Kind == "Icon" then
+                local points = if item.Id == "WeaponIcon" then {
+                    { 0.05, 0.4, 0.18, 0.4 }, { 0.18, 0.4, 0.24, 0.25 }, { 0.24, 0.25, 0.66, 0.25 },
+                    { 0.4, 0.25, 0.43, 0.05 }, { 0.66, 0.25, 0.7, 0.4 }, { 0.7, 0.4, 0.96, 0.4 },
+                    { 0.46, 0.4, 0.4, 0.75 }, { 0.55, 0.4, 0.65, 0.72 }, { 0.18, 0.4, 0.08, 0.7 },
+                } elseif item.Id == "WeaponBomb" then {
+                    { 0.35, 0.2, 0.65, 0.2 }, { 0.35, 0.2, 0.35, 0.85 }, { 0.65, 0.2, 0.65, 0.85 },
+                    { 0.35, 0.85, 0.65, 0.85 }, { 0.43, 0.2, 0.43, 0.05 }, { 0.43, 0.05, 0.6, 0.05 },
+                } elseif item.Id == "WeaponDefuser" then {
+                    { 0.25, 0.08, 0.75, 0.85 }, { 0.75, 0.08, 0.25, 0.85 },
+                    { 0.18, 0.25, 0.35, 0.4 }, { 0.82, 0.25, 0.65, 0.4 },
+                    { 0.25, 0.08, 0.4, 0.05 }, { 0.75, 0.08, 0.6, 0.05 },
+                } else {
+                    { 0.2, 0.2, 0.8, 0.2 }, { 0.8, 0.2, 0.8, 0.4 }, { 0.8, 0.4, 0.45, 0.4 },
+                    { 0.45, 0.4, 0.4, 0.8 }, { 0.4, 0.8, 0.25, 0.8 }, { 0.25, 0.8, 0.3, 0.4 },
+                }
+                for index, coordinates in points do
+                    Line(item, `Icon{index}`, position + Vector2.new(coordinates[1] * rect.Width, coordinates[2] * rect.Height), position + Vector2.new(coordinates[3] * rect.Width, coordinates[4] * rect.Height), item.Color)
+                end
+            elseif item.Kind == "Skeleton" then
+                local torso, head = Model:FindFirstChild("Torso"), Model:FindFirstChild("Head")
+                if torso and torso:IsA("BasePart") and head and head:IsA("BasePart") then
+                    Line(item, "Spine", Project(head.Position), Project(torso.Position - torso.CFrame.UpVector * 0.8), item.Color)
+                    for _, name in { "Left Arm", "Right Arm", "Left Leg", "Right Leg" } do
+                        local part = Model:FindFirstChild(name)
+                        if not part or not part:IsA("BasePart") then continue end
+                        local upper = part.Position + part.CFrame.UpVector * part.Size.Y * 0.4
+                        Line(item, name .. "Joint", Project(torso.Position), Project(upper), item.Color)
+                        Line(item, name .. "Bone", Project(upper), Project(part.Position - part.CFrame.UpVector * part.Size.Y * 0.4), item.Color)
+                    end
+                end
+            elseif item.Kind == "Hitboxes" then
+                for index, part in ModelParts do
+                    local point = Project(part.Position)
+                    Square(item, `Hitbox{index}`, { X = point.X - 5 * scale, Y = point.Y - 5 * scale, Width = 10 * scale, Height = 10 * scale }, item.Color, false)
+                end
+            end
+        end
+
+        local function Hit(point: Vector2): any
+            local ancestor: Instance? = Stage
+            while ancestor do
+                if ancestor:IsA("GuiObject") and ancestor.ClipsDescendants and not Library:MouseIsOverFrame(ancestor, point) then return nil end
+                ancestor = ancestor.Parent
+            end
+            local found = nil
+            for _, itemId in Preview.ItemOrder do
+                local item = Preview.Items[itemId]
+                if not item.Enabled or not Contains(item.Rect, point) then continue end
+                if item.Kind == "Box" then
+                    local rect = item.Rect
+                    local edge = math.min(point.X - rect.X, rect.X + rect.Width - point.X, point.Y - rect.Y, rect.Y + rect.Height - point.Y)
+                    if edge > 5 * Scale() then continue end
+                elseif item.Kind == "Skeleton" then
+                    local nearBone = false
+                    for _, segment in item.HitLines or {} do
+                        local direction = segment[2] - segment[1]
+                        local progress = math.clamp((point - segment[1]):Dot(direction) / math.max(0.01, direction:Dot(direction)), 0, 1)
+                        if (point - segment[1] - direction * progress).Magnitude <= 5 * Scale() then nearBone = true; break end
+                    end
+                    if not nearBone then continue end
+                elseif item.Kind == "Hitboxes" then
+                    local nearHitbox = false
+                    for _, part in ModelParts do
+                        local relative = point - Project(part.Position)
+                        if math.max(math.abs(relative.X), math.abs(relative.Y)) <= 8 * Scale() then nearHitbox = true; break end
+                    end
+                    if not nearHitbox then continue end
+                end
+                if found == nil or item.Rect.Width * item.Rect.Height < found.Rect.Width * found.Rect.Height then found = item end
+            end
+            return found
+        end
+
+        local function DropSide(point: Vector2, rect: any): string
+            local center = Vector2.new(rect.X + rect.Width / 2, rect.Y + rect.Height / 2)
+            local relative = point - center
+            if math.abs(relative.X / math.max(1, rect.Width)) > math.abs(relative.Y / math.max(1, rect.Height)) then
+                return if relative.X < 0 then "Left" else "Right"
+            end
+            return if relative.Y < 0 then "Top" else "Bottom"
+        end
+
+        local function MoveDragged(point: Vector2): ()
+            if not Drag then return end
+            if Drag.Model then
+                Preview.Rotation = Drag.Rotation + (point.X - Drag.Start.X) * 0.6
+                return
+            end
+            if (point - Drag.Start).Magnitude < 4 * Scale() and not Drag.Moved then return end
+            Drag.Moved = true
+            local side = DropSide(point, Preview.Bounds)
+            local siblings = {}
+            for _, itemId in Preview.ItemOrder do
+                local other = Preview.Items[itemId]
+                if other == Drag.Item or not other.Enabled or other.Side ~= side or not other.Rect then continue end
+                if (other.Kind == "Bar") ~= (Drag.Item.Kind == "Bar") then continue end
+                if other.Kind == "Box" or other.Kind == "Skeleton" or other.Kind == "Hitboxes" then continue end
+                table.insert(siblings, other)
+            end
+            table.sort(siblings, function(first: any, second: any): boolean return first.Order < second.Order end)
+            local index = 1
+            for _, other in siblings do
+                local middle = other.Rect.Y + other.Rect.Height / 2
+                if side == "Top" then
+                    if point.Y < middle then index += 1 end
+                elseif point.Y > middle then index += 1 end
+            end
+            local signature = `{side}:{index}`
+            if Drag.Signature ~= signature then
+                Drag.Signature = signature
+                Preview:MoveItem(Drag.Item.Id, side, index)
+            end
+        end
+
+        Connect(UserInputService.InputBegan, function(input: InputObject): ()
+            if not IsShown() or UserInputService:GetFocusedTextBox() then return end
+            local primary = input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch
+            local secondary = input.UserInputType == Enum.UserInputType.MouseButton2
+            if not primary and not secondary then
+                if input.KeyCode == Enum.KeyCode.Escape and Expanded then Preview:SetExpanded(false) end
+                return
+            end
+            if CurrentMenu then return end
+            local point = if input.UserInputType == Enum.UserInputType.Touch then Vector2.new(input.Position.X, input.Position.Y) else MousePoint()
+            if not Library:MouseIsOverFrame(Stage, point) then return end
+            local item = Hit(point)
+            if secondary and item then
+                Selected, PopupPoint = item, point
+                RefreshSettings()
+                SettingsMenu:Open()
+            elseif primary and item then
+                Drag = { Item = item, Start = point, Moved = false }
+            elseif primary then
+                Drag = { Model = true, Start = point, Rotation = Preview.Rotation }
+            end
+        end)
+        Connect(UserInputService.InputChanged, function(input: InputObject): ()
+            if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+                local point = if input.UserInputType == Enum.UserInputType.Touch then Vector2.new(input.Position.X, input.Position.Y) else MousePoint()
+                if Pointer then UpdatePicker(point) end
+                if Drag and IsShown() then MoveDragged(point) end
+            elseif input.UserInputType == Enum.UserInputType.MouseWheel and IsShown() and not CurrentMenu and Library:MouseIsOverFrame(Stage, MousePoint()) then
+                Preview.Zoom = math.clamp(Preview.Zoom + input.Position.Z * 0.05, 0.6, 1.25)
+            end
+        end)
+        Connect(UserInputService.InputEnded, function(input: InputObject): ()
+            if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+                if Drag and Drag.Item and Drag.Moved then Notify(Drag.Item.Id) end
+                Drag, Pointer = nil, nil
+            end
+        end)
+
+        Connect(RunService.RenderStepped, function(): ()
+            for _, itemId in Preview.ItemOrder do
+                local item = Preview.Items[itemId]
+                for _, object in item.Drawings do object.Visible = false end
+                item.Hover.Visible = false
+            end
+            if not IsShown() then
+                Drag, Pointer = nil, nil
+                SetHover(nil)
+                SettingsMenu:Close()
+                ItemsMenu:Close()
+                return
+            end
+            local aspect = Stage.AbsoluteSize.X / Stage.AbsoluteSize.Y
+            local extent = math.max(ModelSize.Y, ModelSize.X / math.max(0.4, aspect))
+            local distance = extent / (2 * math.tan(math.rad(Camera.FieldOfView / 2)) * 0.64 * Preview.Zoom) + ModelSize.Z
+            Camera.CFrame = CFrame.lookAt(ModelCenter + Vector3.new(0, 0, -distance), ModelCenter)
+            Model:PivotTo(CFrame.new(ModelCenter) * CFrame.Angles(0, math.rad(Preview.Rotation), 0) * CFrame.new(-ModelCenter) * BasePivot)
+            local rect = ModelRect()
+            Preview.Bounds = rect
+            Layout(rect)
+            local hovered = if CurrentMenu then nil elseif Drag and Drag.Item then Drag.Item else Hit(MousePoint())
+            SetHover(hovered)
+            if not Drag then
+                Hint.Text = if hovered then `{hovered.Label} · Drag to move · Right click to edit` else "Drag items · Right click to edit · Drag model to rotate"
+            elseif Drag.Item then Hint.Text = `Move {Drag.Item.Label} · {Drag.Item.Side}` end
+            for _, itemId in Preview.ItemOrder do
+                local item = Preview.Items[itemId]
+                if not item.Enabled then continue end
+                local itemRect = item.Rect
+                if itemRect then
+                    local scale = Scale()
+                    item.Hover.Position = UDim2.fromOffset((itemRect.X - Stage.AbsolutePosition.X) / scale, (itemRect.Y - Stage.AbsolutePosition.Y) / scale)
+                    item.Hover.Size = UDim2.fromOffset(itemRect.Width / scale, itemRect.Height / scale)
+                    item.Hover.Visible = true
+                end
+                RenderItem(item)
+            end
+        end)
+
+        function Preview:SetVisible(visible: boolean): ()
+            self.Visible, Holder.Visible = visible, visible
+            if not visible then SettingsMenu:Close(); ItemsMenu:Close() end
+            Groupbox:Resize()
+        end
+
+        function Preview:Destroy(): ()
+            if self.Destroyed then return end
+            self.Destroyed = true
+            for _, connection in self.Connections do connection:Disconnect() end
+            table.clear(self.Connections)
+            for _, item in self.Items do
+                if item.Tween then item.Tween:Cancel(); item.Tween:Destroy() end
+                for _, object in item.Drawings do object:Remove() end
+                table.clear(item.Drawings)
+            end
+            SettingsMenu:Destroy()
+            ItemsMenu:Destroy()
+            if Fullscreen then Fullscreen:Destroy() else Holder:Destroy() end
+            local index = table.find(Groupbox.Elements, self)
+            if index and not Groupbox.Destroyed then table.remove(Groupbox.Elements, index) end
+            if Options[Idx] == self then Options[Idx] = nil end
+            if not Groupbox.Destroyed and not Library.Unloaded then Groupbox:Resize() end
+        end
+
+        ReadModel()
+        ApplyModel()
+        if Info.Object then Preview:SetObject(Info.Object) end
+        if Info.Data then Preview:SetData(Info.Data) end
+        if Info.Items then
+            for itemId, properties in Info.Items do Preview:SetItem(itemId, properties) end
+        end
+        Preview.Holder, Preview.Base, Preview.ViewportFrame, Preview.Object = Holder, Holder, ViewportFrame, Model
+        Preview.SettingsMenu, Preview.ItemsMenu = SettingsMenu, ItemsMenu
+        Preview.Value = Preview:GetConfig()
+        Options[Idx] = Preview
+        table.insert(Groupbox.Elements, Preview)
+        Groupbox:Resize()
+        return Preview
+    end
+
     function Funcs:AddViewport(Idx, Info)
         setthreadidentity(8)
         if self.Destroyed then return nil end
@@ -10248,6 +11431,12 @@ do
             Object = ViewportObject :: PVInstance,
             Camera = if not Info.Camera then Instance.new("Camera") else Info.Camera,
             Interactive = Info.Interactive,
+            Clickable = Info.Clickable,
+            ToggleSelection = Info.ToggleSelection,
+            Selected = Info.Selected,
+            Callback = Info.Callback,
+            Text = Info.Text,
+            RichText = Info.RichText,
             AutoFocus = Info.AutoFocus,
             Visible = Info.Visible,
             Type = "Viewport",
@@ -10289,13 +11478,15 @@ do
             Parent = Container,
         })
 
-        local Box = New("Frame", {
+        local Box = New("TextButton", {
+            Active = Viewport.Interactive or Viewport.Clickable,
             AnchorPoint = Vector2.new(0, 1),
             BackgroundColor3 = "MainColor",
             BorderColor3 = "OutlineColor",
             BorderSizePixel = 1,
             Position = UDim2.fromScale(0, 1),
             Size = UDim2.fromScale(1, 1),
+            Text = "",
             Parent = Holder,
         })
 
@@ -10312,32 +11503,74 @@ do
             Size = UDim2.fromScale(1, 1),
             Parent = Box,
             CurrentCamera = Viewport.Camera,
-            Active = Viewport.Interactive,
+            Active = false,
         })
 
-        table.insert(Viewport.Connections, ViewportFrame.MouseEnter:Connect(function()
+        local TextLabel = New("TextLabel", {
+            AnchorPoint = Vector2.new(0, 1),
+            BackgroundColor3 = "BackgroundColor",
+            BackgroundTransparency = 0.12,
+            Position = UDim2.fromScale(0, 1),
+            RichText = Viewport.RichText,
+            Size = UDim2.new(1, 0, 0, 30),
+            Text = Viewport.Text or "",
+            TextSize = Info.TextSize,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextWrapped = true,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Visible = Viewport.Text ~= nil,
+            ZIndex = Box.ZIndex + 2,
+            Parent = Box,
+        })
+        New("UIPadding", {
+            PaddingLeft = UDim.new(0, 8),
+            PaddingRight = UDim.new(0, 8),
+            Parent = TextLabel,
+        })
+
+        local function UpdateSelection()
             setthreadidentity(8)
-            if not Viewport.Interactive then
-                return
+            local ColorName = if Viewport.Selected then "AccentColor" else "OutlineColor"
+            local RegistryEntry = Library.Registry[Box]
+
+            if RegistryEntry then
+                RegistryEntry.BorderColor3 = ColorName
             end
 
-            for _, Side in Groupbox.Tab.Sides do
-                Side.ScrollingEnabled = false
+            Box.BorderColor3 = Library.Scheme[ColorName]
+        end
+
+        table.insert(Viewport.Connections, Box.MouseEnter:Connect(function()
+            setthreadidentity(8)
+            if Viewport.Clickable then
+                TweenService:Create(Box, Library.TweenInfo, {
+                    BackgroundColor3 = Library:GetBetterColor(Library.Scheme.MainColor, 1),
+                }):Play()
+            end
+
+            if Viewport.Interactive then
+                for _, Side in Groupbox.Tab.Sides do
+                    Side.ScrollingEnabled = false
+                end
             end
         end))
 
-        table.insert(Viewport.Connections, ViewportFrame.MouseLeave:Connect(function()
+        table.insert(Viewport.Connections, Box.MouseLeave:Connect(function()
             setthreadidentity(8)
-            if not Viewport.Interactive then
-                return
+            if Viewport.Clickable then
+                TweenService:Create(Box, Library.TweenInfo, {
+                    BackgroundColor3 = Library.Scheme.MainColor,
+                }):Play()
             end
 
-            for _, Side in Groupbox.Tab.Sides do
-                Side.ScrollingEnabled = true
+            if Viewport.Interactive then
+                for _, Side in Groupbox.Tab.Sides do
+                    Side.ScrollingEnabled = true
+                end
             end
         end))
 
-        table.insert(Viewport.Connections, ViewportFrame.InputBegan:Connect(function(input)
+        table.insert(Viewport.Connections, Box.InputBegan:Connect(function(input)
             setthreadidentity(8)
             if not Viewport.Interactive then
                 return
@@ -10396,7 +11629,7 @@ do
             end
         end))
 
-        table.insert(Viewport.Connections, ViewportFrame.InputChanged:Connect(function(input)
+        table.insert(Viewport.Connections, Box.InputChanged:Connect(function(input)
             setthreadidentity(8)
             if not Viewport.Interactive then
                 return
@@ -10430,6 +11663,19 @@ do
             elseif state == Enum.UserInputState.End or state == Enum.UserInputState.Cancel then
                 Pinching = false
             end
+        end))
+
+        table.insert(Viewport.Connections, Box.Activated:Connect(function()
+            setthreadidentity(8)
+            if not Viewport.Clickable then
+                return
+            end
+
+            if Viewport.ToggleSelection then
+                Viewport:SetSelected(not Viewport.Selected)
+            end
+
+            Library:SafeCallback(Viewport.Callback, Viewport, Viewport.Selected)
         end))
 
         ;(Viewport.Object :: PVInstance).Parent = ViewportFrame
@@ -10486,7 +11732,39 @@ do
         function Viewport:SetInteractive(Interactive: boolean)
             setthreadidentity(8)
             Viewport.Interactive = Interactive
-            ViewportFrame.Active = Interactive
+            Box.Active = Interactive or Viewport.Clickable
+        end
+
+        function Viewport:SetClickable(Clickable: boolean)
+            setthreadidentity(8)
+            Viewport.Clickable = Clickable
+            Box.Active = Clickable or Viewport.Interactive
+        end
+
+        function Viewport:SetSelected(Selected: boolean)
+            setthreadidentity(8)
+            Viewport.Selected = Selected
+            UpdateSelection()
+        end
+
+        function Viewport:SetText(Text: string?, RichText: boolean?)
+            setthreadidentity(8)
+            assert(Text == nil or typeof(Text) == "string", "Viewport text must be a string or nil.")
+
+            Viewport.Text = Text
+            TextLabel.Text = Text or ""
+            TextLabel.Visible = Text ~= nil
+
+            if RichText ~= nil then
+                Viewport.RichText = RichText
+                TextLabel.RichText = RichText
+            end
+        end
+
+        function Viewport:SetCallback(Callback: ((any, boolean) -> ())?)
+            setthreadidentity(8)
+            assert(Callback == nil or typeof(Callback) == "function", "Viewport callback must be a function or nil.")
+            Viewport.Callback = Callback
         end
 
         function Viewport:SetVisible(Visible: boolean)
@@ -10497,9 +11775,13 @@ do
             Groupbox:Resize()
         end
 
+        UpdateSelection()
         Groupbox:Resize()
 
         Viewport.Holder = Holder
+        Viewport.Base = Box
+        Viewport.ViewportFrame = ViewportFrame
+        Viewport.TextLabel = TextLabel
         table.insert(Groupbox.Elements, Viewport)
 
         Options[Idx] = Viewport
@@ -10854,6 +12136,242 @@ do
         end
 
         return Video
+    end
+
+    function Funcs:AddList(Info)
+        setthreadidentity(8)
+        if self.Destroyed then return nil end
+
+        Info = Library:Validate(Info, Templates.List)
+
+        local Groupbox = self
+        local Container = Groupbox.Container
+        local BodyHeight = math.max(40, Info.Height)
+        local InitialCollapsed = Info.DisableCollapsing ~= true and Info.Collapsed == true
+
+        local Holder = New("Frame", {
+            BackgroundColor3 = "MainColor",
+            Size = UDim2.new(1, 0, 0, 0),
+            Visible = Info.Visible,
+            Parent = Container,
+        })
+        table.insert(
+            Library.Corners,
+            New("UICorner", {
+                CornerRadius = UDim.new(0, math.max(2, Library.CornerRadius - 1)),
+                Parent = Holder,
+            })
+        )
+        Library:AddOutline(Holder)
+
+        local Header = New("TextButton", {
+            BackgroundTransparency = 1,
+            Size = UDim2.new(1, 0, 0, 32),
+            Text = "",
+            Parent = Holder,
+        })
+
+        local HeaderIcon
+        local ParsedIcon = Library:GetCustomIcon(Info.IconName)
+        if ParsedIcon then
+            HeaderIcon = New("ImageLabel", {
+                AnchorPoint = Vector2.new(0, 0.5),
+                ImageColor3 = ParsedIcon.Custom and "WhiteColor" or "AccentColor",
+                Position = UDim2.new(0, 8, 0.5, 0),
+                Size = UDim2.fromOffset(17, 17),
+                Parent = Header,
+            })
+            Library:ApplyLucideIcon(HeaderIcon, ParsedIcon)
+        end
+
+        local HeaderLabel = New("TextLabel", {
+            AnchorPoint = Vector2.new(0, 0.5),
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, HeaderIcon and 31 or 8, 0.5, 0),
+            Size = UDim2.new(1, HeaderIcon and -63 or -40, 0, 18),
+            Text = Info.Name,
+            TextSize = 14,
+            TextTruncate = Enum.TextTruncate.AtEnd,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            Parent = Header,
+        })
+
+        local CollapseArrow = New("ImageLabel", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            BackgroundTransparency = 1,
+            ImageColor3 = "FontColor",
+            ImageTransparency = 0.35,
+            Position = UDim2.new(1, -8, 0.5, 0),
+            Rotation = InitialCollapsed and 0 or 180,
+            Size = UDim2.fromOffset(16, 16),
+            Visible = Info.DisableCollapsing ~= true,
+            Parent = Header,
+        })
+        if ArrowIcon then
+            Library:ApplyLucideIcon(CollapseArrow, ArrowIcon, CollapseArrow.Rotation)
+        end
+
+        local HeaderLine = Library:MakeLine(Holder, {
+            Position = UDim2.fromOffset(0, 32),
+            Size = UDim2.new(1, 0, 0, 1),
+        })
+
+        local ListContainer = New("ScrollingFrame", {
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            CanvasSize = UDim2.fromScale(0, 0),
+            Position = UDim2.fromOffset(0, 33),
+            ScrollBarImageColor3 = "AccentColor",
+            ScrollBarThickness = 3,
+            Size = UDim2.new(1, 0, 0, BodyHeight),
+            Visible = not InitialCollapsed,
+            Parent = Holder,
+        })
+        local ListLayout = New("UIListLayout", {
+            Padding = UDim.new(0, 8),
+            Parent = ListContainer,
+        })
+        New("UIPadding", {
+            PaddingBottom = UDim.new(0, 7),
+            PaddingLeft = UDim.new(0, 7),
+            PaddingRight = UDim.new(0, 7),
+            PaddingTop = UDim.new(0, 7),
+            Parent = ListContainer,
+        })
+
+        local List = {
+            Connections = {},
+            Destroyed = false,
+
+            Type = "List",
+            Text = Info.Name,
+            Name = Info.Name,
+            Visible = Info.Visible,
+            Collapsed = InitialCollapsed,
+            Height = BodyHeight,
+
+            Holder = Holder,
+            Container = ListContainer,
+            Elements = {},
+            Tab = Groupbox.Tab,
+            SubTab = Groupbox.SubTab,
+            Parent = Groupbox,
+        }
+
+        function List:Resize()
+            setthreadidentity(8)
+            if List.Destroyed then return end
+
+            ListContainer.Size = UDim2.new(1, 0, 0, List.Height)
+            Holder.Size = UDim2.new(1, 0, 0, if List.Collapsed then 32 else 33 + List.Height)
+            HeaderLine.Visible = not List.Collapsed
+            Groupbox:Resize()
+        end
+
+        function List:SetCollapsed(Collapsed: boolean)
+            setthreadidentity(8)
+            if Info.DisableCollapsing == true then return end
+
+            List.Collapsed = Collapsed
+            ListContainer.Visible = not Collapsed
+
+            local Rotation = if Collapsed then 0 else 180
+            if Library.Animations and Library.Animations.Groupbox then
+                TweenService:Create(CollapseArrow, Library.GroupboxTweenInfo, { Rotation = Rotation }):Play()
+            else
+                CollapseArrow.Rotation = Rotation
+            end
+
+            List:Resize()
+        end
+
+        function List:ToggleCollapsed()
+            setthreadidentity(8)
+            List:SetCollapsed(not List.Collapsed)
+        end
+
+        function List:SetHeight(Height: number)
+            setthreadidentity(8)
+            assert(typeof(Height) == "number" and Height >= 40, "List height must be at least 40 pixels.")
+
+            List.Height = Height
+            List:Resize()
+        end
+
+        function List:SetText(Text: string)
+            setthreadidentity(8)
+            assert(typeof(Text) == "string", "List text must be a string.")
+
+            List.Text = Text
+            List.Name = Text
+            HeaderLabel.Text = Text
+        end
+
+        function List:SetVisible(Visible: boolean)
+            setthreadidentity(8)
+            List.Visible = Visible
+            Holder.Visible = Visible
+            Groupbox:Resize()
+        end
+
+        function List:Clear()
+            setthreadidentity(8)
+            for _, Element in table.clone(List.Elements) do
+                if Element.Destroy then
+                    Element:Destroy()
+                end
+            end
+            table.clear(List.Elements)
+            List:Resize()
+        end
+
+        function List:GetElements(): { any }
+            setthreadidentity(8)
+            return table.clone(List.Elements)
+        end
+
+        table.insert(List.Connections, ListLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+            setthreadidentity(8)
+            ListContainer.CanvasSize = UDim2.fromOffset(0, ListLayout.AbsoluteContentSize.Y + 14)
+        end))
+
+        if Info.DisableCollapsing ~= true then
+            table.insert(List.Connections, Header.Activated:Connect(function()
+                setthreadidentity(8)
+                List:ToggleCollapsed()
+            end))
+        end
+
+        setmetatable(List, BaseList)
+        table.insert(Groupbox.Elements, List)
+
+        function List:Destroy()
+            setthreadidentity(8)
+            if List.Destroyed then return end
+
+            List.Destroyed = true
+            List:Clear()
+
+            for _, Connection in List.Connections do
+                Connection:Disconnect()
+            end
+            table.clear(List.Connections)
+
+            if Holder then
+                Holder:Destroy()
+            end
+
+            local ElementIndex = table.find(Groupbox.Elements, List)
+            if ElementIndex then
+                table.remove(Groupbox.Elements, ElementIndex)
+            end
+
+            Groupbox:Resize()
+        end
+
+        List:Resize()
+        return List
     end
 
     function Funcs:AddUIPassthrough(Idx, Info)
@@ -11276,6 +12794,32 @@ do
         end
 
         return DepGroupbox
+    end
+
+    local ListMethods = {
+        "AddDivider",
+        "AddLabel",
+        "AddButton",
+        "AddCheckbox",
+        "AddToggle",
+        "AddInput",
+        "AddSlider",
+        "AddDropdown",
+        "AddViewport",
+        "AddESPPreview",
+        "AddImage",
+        "AddVideo",
+    }
+
+    local ListFuncs = {}
+    for _, MethodName in ListMethods do
+        ListFuncs[MethodName] = Funcs[MethodName]
+    end
+
+    BaseList.__index = ListFuncs
+    BaseList.__namecall = function(_, Key, ...)
+        setthreadidentity(8)
+        return ListFuncs[Key](...)
     end
 
     BaseGroupbox.__index = Funcs
@@ -12863,6 +14407,8 @@ function Library:CreateWindow(WindowInfo)
             Groupbox:Show()
         elseif Groupbox.Type == "Groupbox" and Groupbox.Collapsed then
             Groupbox:SetCollapsed(false)
+        elseif Groupbox.Type == "List" and Groupbox.Collapsed then
+            Groupbox:SetCollapsed(false)
         end
 
         task.defer(function()
@@ -12871,9 +14417,20 @@ function Library:CreateWindow(WindowInfo)
                 return
             end
 
+            local RevealHolder = Element.Holder
+            if Groupbox.Type == "List" then
+                local ListContainer = Groupbox.Container
+                local ListOffset = Element.Holder.AbsolutePosition.Y
+                    - ListContainer.AbsolutePosition.Y
+                    + ListContainer.CanvasPosition.Y
+                    - 7
+                ListContainer.CanvasPosition = Vector2.new(ListContainer.CanvasPosition.X, math.max(0, ListOffset))
+                RevealHolder = Groupbox.Holder
+            end
+
             for _, Side in Tab.Sides or {} do
-                if Element.Holder:IsDescendantOf(Side) then
-                    local Offset = Element.Holder.AbsolutePosition.Y - Side.AbsolutePosition.Y + Side.CanvasPosition.Y - 12
+                if RevealHolder:IsDescendantOf(Side) then
+                    local Offset = RevealHolder.AbsolutePosition.Y - Side.AbsolutePosition.Y + Side.CanvasPosition.Y - 12
                     Side.CanvasPosition = Vector2.new(Side.CanvasPosition.X, math.max(0, Offset))
                     break
                 end
