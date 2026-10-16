@@ -1,5 +1,14 @@
 --!strict
 
+export type ESPContext = {
+    Player: Player, Character: Model, Humanoid: Humanoid, RootPart: BasePart,
+    Camera: Camera, Distance: number, Team: string, DeltaTime: number, Data: { [string]: any },
+}
+export type ESPItemResult = boolean | string | number | {
+    Visible: boolean?, Text: string?, Value: number?, Max: number?,
+    Color: Color3?, Transparency: number?, Segments: { { number } }?,
+}
+
 local cloneref = (cloneref or clonereference or function(instance: any)
     setthreadidentity(8)
     return instance
@@ -10327,22 +10336,25 @@ do
         if self.Destroyed then return nil end
 
         local Info = _Info or {}
+        local Definitions = Info.Definitions or {}
+        assert(type(Definitions) == "table", "ESP Definitions must be a table")
         local DrawingProvider = Info.Drawing or getgenv().Drawing
         assert(DrawingProvider and type(DrawingProvider.new) == "function", "Load Z-WareDrawing.lua before AddESPPreview")
         local Groupbox = self
         local Height = math.max(300, Info.Height or 500)
         local Sides = { "Left", "Top", "Right", "Bottom" }
-        local Accent = Color3.fromRGB(0, 218, 149)
+        local Accent = Info.AccentColor or Library.Scheme.AccentColor
         local Preview = {
             Type = "ESPPreview", Destroyed = false, Visible = Info.Visible ~= false,
             Connections = {}, Items = {}, ItemOrder = {}, Value = {},
-            Callback = Info.Callback, Changed = nil, Team = "Enemies",
-            Data = { Name = "NEVERLOSE", Health = 65, MaxHealth = 100, Distance = 25, Ammo = 18, MaxAmmo = 30, Weapon = "AK-47", HitChance = 78 },
+            Callback = Info.Callback, Changed = nil, Team = "Enemies", Revision = 0,
+            Bindings = {}, Trackers = {}, DataProvider = nil,
+            Data = { Name = "Z-Ware User", Health = 65, MaxHealth = 100, Distance = 25, Ammo = 18, MaxAmmo = 30, Weapon = "AK-47", HitChance = 78 },
             ModelColor = Info.ModelColor or Color3.fromRGB(190, 194, 201),
             ModelTransparency = 0, ModelStyle = "Solid", Rotation = 0, Zoom = 1,
         }
         local Holder = New("Frame", {
-            Name = Idx, BackgroundColor3 = Color3.fromRGB(15, 16, 21),
+            Name = Idx, BackgroundColor3 = "BackgroundColor",
             Size = UDim2.new(1, 0, 0, Height), Visible = Preview.Visible, Parent = Groupbox.Container,
         })
         New("UICorner", { CornerRadius = UDim.new(0, 8), Parent = Holder })
@@ -10381,7 +10393,7 @@ do
 
         local function Button(parent: Instance, text: string, position: UDim2, size: UDim2): TextButton
             local button = New("TextButton", {
-                BackgroundColor3 = Color3.fromRGB(26, 27, 35), BackgroundTransparency = 0.25,
+                BackgroundColor3 = "MainColor", BackgroundTransparency = 0.25,
                 Position = position, Size = size, Text = text, TextSize = 12, Parent = parent,
             })
             New("UICorner", { CornerRadius = UDim.new(0, 5), Parent = button })
@@ -10485,12 +10497,12 @@ do
             end
         end
 
-        local function Scale(): number
+        local function Scale(_context: any?): number
+            if _context then return _context.Scale end
             return math.max(0.01, Holder.AbsoluteSize.Y / Height)
         end
 
         local function MousePoint(): Vector2
-            local inset = GuiService:GetGuiInset()
             return Vector2.new(Mouse.X, Mouse.Y)
         end
 
@@ -10511,29 +10523,32 @@ do
         end
 
         local function Notify(itemId: string?): ()
+            Preview.Revision += 1
             Preview.Value = Preview:GetConfig()
             if SuppressCallback then return end
             Library:SafeCallback(Preview.Callback, Preview.Value, itemId, Preview)
             Library:SafeCallback(Preview.Changed, Preview.Value, itemId, Preview)
         end
 
-        local function CreateDrawing(item: any, key: string, className: string): any
+        local function CreateDrawing(item: any, key: string, className: string, _context: any?): any
             if item.Drawings[key] then return item.Drawings[key] end
             local object = DrawingProvider.new(className)
             object.Visible = false
             local frame = if type(object) == "table" then rawget(object, "_frame") else nil
             if typeof(frame) == "Instance" and frame:IsA("GuiObject") then
-                frame.Parent = DrawingClip
+                frame.Parent = if _context then _context.Layer else DrawingClip
                 item.UsesGui = true
             end
             item.Drawings[key] = object
             return object
         end
 
-        local function Draw(item: any, key: string, className: string, properties: { [string]: any }): any
-            local object = CreateDrawing(item, key, className)
-            local scale = if item.UsesGui then Scale() else 1
-            local origin = if item.UsesGui then Stage.AbsolutePosition else -select(1, GuiService:GetGuiInset())
+        local function Draw(item: any, key: string, className: string, properties: { [string]: any }, _context: any?): any
+            local object = CreateDrawing(item, key, className, _context)
+            -- Z-WareDrawing insets filled squares by their outline thickness too.
+            if className == "Square" and properties.Filled == true and item.UsesGui then properties.Thickness = 0 end
+            local scale = if item.UsesGui and not _context then Scale() else 1
+            local origin = if _context then Vector2.zero elseif item.UsesGui then Stage.AbsolutePosition else -select(1, GuiService:GetGuiInset())
             for property, value in properties do
                 if property == "Position" or property == "From" or property == "To" then
                     object[property] = (value - origin) / scale
@@ -10545,7 +10560,7 @@ do
                     object[property] = value
                 end
             end
-            object.Transparency = 1 - item.Transparency
+            object.Transparency = 1 - (item.ResolvedTransparency or item.Transparency)
             object.Visible = true
             return object
         end
@@ -10567,9 +10582,11 @@ do
 
         function Preview:AddItem(itemId: string, definition: { [string]: any }): any
             assert(type(itemId) == "string" and self.Items[itemId] == nil, "Duplicate ESP item")
+            assert(definition.Callback == nil or type(definition.Callback) == "function", "ESP Callback must be a function")
             local item = {
-                Id = itemId, Label = definition.Label or itemId, Group = definition.Group or "Flags",
+                Id = itemId, Label = definition.Label or itemId, Group = definition.Group or "Flags", DataKey = definition.DataKey,
                 Kind = definition.Kind or "Text", Text = definition.Text or definition.Label or itemId,
+                TemplateText = definition.Text or definition.Label or itemId,
                 Enabled = definition.Enabled == true, Side = definition.Side or "Right",
                 Order = definition.Order or (#self.ItemOrder + 1), Color = definition.Color or Color3.fromRGB(224, 226, 232),
                 Transparency = definition.Transparency or 0, Size = definition.Size or 12,
@@ -10581,6 +10598,7 @@ do
             assert(table.find(Sides, item.Side), "Invalid ESP item side")
             New("UICorner", { CornerRadius = UDim.new(0, 3), Parent = item.Hover })
             self.Items[itemId] = item
+            if definition.Callback then self.Bindings[itemId] = definition.Callback end
             table.insert(self.ItemOrder, itemId)
             if RebuildChips then RebuildChips() end
             if RefreshChips then RefreshChips() end
@@ -10588,50 +10606,21 @@ do
             return item
         end
 
-        local Definitions = {
-            { "Box", "Bounding Box", "Main", "Box", "Top", "", false },
-            { "Name", "Name", "Main", "Text", "Top", "NEVERLOSE", true },
-            { "Distance", "Distance", "Main", "Text", "Top", "25 m", true },
-            { "Health", "Health Bar", "Main", "Bar", "Left", "", true },
-            { "Ammo", "Ammo Bar", "Main", "Bar", "Bottom", "", false },
-            { "Skeleton", "Skeleton", "Main", "Skeleton", "Top", "", false },
-            { "Unarmored", "Unarmored", "Flags", "Text", "Right", "NA", true },
-            { "Defuser", "Defuser", "Flags", "Text", "Right", "KIT", true },
-            { "Blind", "Blind", "Flags", "Text", "Right", "BLIND", true },
-            { "Scoped", "Scoped", "Flags", "Text", "Right", "ZOOM", true },
-            { "Reload", "Reload", "Flags", "Text", "Right", "RELOAD", true },
-            { "Immunity", "Immunity", "Flags", "Text", "Right", "IMMUNE", true },
-            { "Slowed", "Slowed", "Flags", "Text", "Right", "SLOW", true },
-            { "Vulnerable", "Vulnerable", "Flags", "Text", "Right", "VULN", true },
-            { "Bomb", "Bomb", "Flags", "Text", "Right", "BOMB", false },
-            { "Hostage", "Hostage", "Flags", "Text", "Right", "HOSTAGE", false },
-            { "Defuse", "Defuse", "Flags", "Text", "Right", "DEFUSE", true },
-            { "PinPulled", "Pin Pulled", "Flags", "Text", "Right", "PIN", true },
-            { "Money", "Money", "Flags", "Text", "Right", "$16000", false },
-            { "Priority", "Order Priority", "Flags", "Text", "Right", "SIM", true },
-            { "Delay", "Delay", "Flags", "Text", "Right", "10 MS", true },
-            { "WeaponText", "Text", "Weapon", "Text", "Bottom", "AK-47", false },
-            { "WeaponIcon", "Icon", "Weapon", "Icon", "Bottom", "Rifle", true },
-            { "Readiness", "Readiness Bar", "Weapon", "Bar", "Bottom", "", true },
-            { "WeaponBomb", "Bomb", "Weapon", "Icon", "Left", "Bomb", false },
-            { "WeaponDefuser", "Defuser", "Weapon", "Icon", "Left", "Kit", false },
-            { "Taser", "Taser", "Weapon", "Icon", "Left", "Taser", false },
-            { "HitChance", "Hit Chance", "Aimbot", "Text", "Top", "78%", false },
-            { "Hitboxes", "Hitboxes", "Aimbot", "Hitboxes", "Top", "", false },
-        }
         for index, definition in Definitions do
-            local item = Preview:AddItem(definition[1], {
-                Label = definition[2], Group = definition[3], Kind = definition[4], Side = definition[5],
-                Text = definition[6], Enabled = definition[7], Order = index,
-                Size = if definition[3] == "Flags" then 10 else 12,
-            })
-            if item.Group == "Flags" then
-                item.Color = if index % 3 == 0 then Color3.fromRGB(255, 91, 113)
-                    elseif index % 3 == 1 then Color3.fromRGB(255, 207, 72) else Color3.fromRGB(90, 178, 255)
-            elseif item.Id == "Health" then item.Color = Accent
-            elseif item.Kind == "Bar" then item.Color = Color3.fromRGB(255, 201, 103) end
+            assert(type(definition) == "table", "Each ESP definition must be a table")
+            local settings = table.clone(definition)
+            local itemId = settings.Id or definition[1]
+            settings.Label = settings.Label or definition[2]
+            settings.Group = settings.Group or definition[3]
+            settings.Kind = settings.Kind or definition[4]
+            settings.Side = settings.Side or definition[5]
+            settings.Text = settings.Text or definition[6]
+            if settings.Enabled == nil then settings.Enabled = definition[7] == true end
+            settings.Callback = settings.Callback or definition[8]
+            settings.Order = settings.Order or index
+            settings.DataKey = settings.DataKey or ({ Name = "Name", Distance = "Distance", WeaponText = "Weapon", HitChance = "HitChance" })[itemId]
+            Preview:AddItem(itemId, settings)
         end
-        Preview.Items.Name.Order, Preview.Items.Distance.Order = 3, 2
 
         function Preview:GetConfig(): { [string]: any }
             local config = { Version = 1, Items = {}, ModelColor = self.ModelColor:ToHex(), ModelTransparency = self.ModelTransparency, ModelStyle = self.ModelStyle }
@@ -10936,7 +10925,12 @@ do
             table.clear(ChipGroups)
             table.clear(Chips)
             local vertical = 43
-            for _, groupName in { "Main", "Flags", "Weapon", "Aimbot" } do
+            local groups = {}
+            for _, itemId in Preview.ItemOrder do
+                local groupName = Preview.Items[itemId].Group
+                if not table.find(groups, groupName) then table.insert(groups, groupName) end
+            end
+            for _, groupName in groups do
                 local group = New("Frame", { BackgroundColor3 = Color3.fromRGB(20, 21, 28), Position = UDim2.fromOffset(10, vertical), Size = UDim2.fromOffset(316, 100), Parent = ItemList })
                 table.insert(ChipGroups, group)
                 New("UICorner", { CornerRadius = UDim.new(0, 8), Parent = group })
@@ -11016,7 +11010,11 @@ do
         end
         Connect(ExpandButton.Activated, function(): () Preview:SetExpanded(not Expanded) end)
 
-        local function Project(position: Vector3): Vector2
+        local function Project(position: Vector3, _context: any?): Vector2
+            if _context then
+                local projected = _context.Camera:WorldToViewportPoint(position)
+                return Vector2.new(projected.X, projected.Y)
+            end
             local relative = Camera.CFrame:PointToObjectSpace(position)
             local focal = Stage.AbsoluteSize.Y / (2 * math.tan(math.rad(Camera.FieldOfView / 2)))
             local depth = math.max(0.01, -relative.Z)
@@ -11039,33 +11037,37 @@ do
             return { X = minimum.X, Y = minimum.Y, Width = maximum.X - minimum.X, Height = maximum.Y - minimum.Y }
         end
 
-        local function TextFor(item: any): string
+        local function TextFor(item: any, _context: any?): string
+            if _context then return item.ResolvedText or item.Text end
             local data = Preview.Data
-            if item.Id == "Name" and item.Text == "NEVERLOSE" then return data.Name end
-            if item.Id == "Distance" and item.Text == "25 m" then return `{math.floor(data.Distance)} m` end
-            if item.Id == "WeaponText" and item.Text == "AK-47" then return data.Weapon end
-            if item.Id == "HitChance" and item.Text == "78%" then return `{math.floor(data.HitChance)}%` end
+            if item.DataKey and item.Text == item.TemplateText then
+                local value = data[item.DataKey]
+                if item.DataKey == "Distance" then return `{math.floor(value)} m` end
+                if item.DataKey == "HitChance" then return `{math.floor(value)}%` end
+                return tostring(value)
+            end
             return item.Text
         end
 
-        local function Measure(item: any): (number, number)
-            local scale = Scale()
+        local function Measure(item: any, _context: any?): (number, number)
+            local scale = Scale(_context)
             if item.Kind == "Icon" then return item.Size * 4 * scale, (item.Size + 4) * scale end
-            local object = CreateDrawing(item, "Text", "Text")
-            object.Text = TextFor(item)
+            local object = CreateDrawing(item, "Text", "Text", _context)
+            object.Text = TextFor(item, _context)
             object.Font = 2
-            object.Size = item.Size * (if item.UsesGui then 1 else scale)
+            object.Size = item.Size * (if item.UsesGui and not _context then 1 else scale)
             local bounds = object.TextBounds
-            return math.max(12, bounds.X * (if item.UsesGui then scale else 1)) + 8 * scale, (item.Size + 5) * scale
+            return math.max(12, bounds.X * (if item.UsesGui and not _context then scale else 1)) + 8 * scale, (item.Size + 5) * scale
         end
 
-        local function Layout(rect: any): ()
-            local scale = Scale()
+        local function Layout(rect: any, _context: any?): ()
+            local scale = Scale(_context)
+            local items = if _context then _context.Items else Preview.Items
             for _, side in Sides do
                 local bars, labels = {}, {}
                 for _, itemId in Preview.ItemOrder do
-                    local item = Preview.Items[itemId]
-                    item.Hover.Visible = false
+                    local item = items[itemId]
+                    if item.Hover then item.Hover.Visible = false end
                     if not item.Enabled or item.Side ~= side then continue end
                     if item.Kind == "Box" or item.Kind == "Skeleton" or item.Kind == "Hitboxes" then
                         item.Rect = table.clone(rect)
@@ -11090,85 +11092,98 @@ do
                         Width = if vertical then thickness else rect.Width, Height = if vertical then rect.Height else thickness,
                     }
                     offset += thickness + 4 * scale
-                    if item.Id == "Health" and not vertical then offset += 14 * scale end
+                    if item.Id == "Health" and not vertical then offset += (item.Size + 4) * scale end
                 end
                 local cursor = 0
-                local columnWidth = 0
+                local columnWidth, rowHeight = 0, 0
                 for _, item in labels do
-                    local width, height = Measure(item)
-                    width = math.min(width, Stage.AbsoluteSize.X * 0.7)
+                    local width, height = Measure(item, _context)
+                    width = math.min(width, (if _context then _context.ViewportSize.X else Stage.AbsoluteSize.X) * 0.7)
+                    item.MeasuredWidth, item.MeasuredHeight = width, height
+                    columnWidth, rowHeight = math.max(columnWidth, width), math.max(rowHeight, height)
+                end
+                for _, item in labels do
                     local vertical = side == "Left" or side == "Right"
-                    if vertical and cursor + height > rect.Height and cursor > 0 then
-                        offset += columnWidth + 5 * scale
-                        cursor, columnWidth = 0, 0
-                    end
+                    local width = item.MeasuredWidth
+                    local height = if vertical and item.Kind == "Text" then rowHeight else item.MeasuredHeight
                     item.Rect = {
-                        X = if side == "Left" then rect.X - offset - width elseif side == "Right" then rect.X + rect.Width + offset else rect.X + (rect.Width - width) / 2,
+                        X = if side == "Left" then rect.X - offset - columnWidth elseif side == "Right" then rect.X + rect.Width + offset else rect.X + (rect.Width - width) / 2,
                         Y = if side == "Top" then rect.Y - offset - cursor - height elseif side == "Bottom" then rect.Y + rect.Height + offset + cursor else rect.Y + cursor,
                         Width = width, Height = height,
                     }
-                    cursor += height
-                    columnWidth = math.max(columnWidth, width)
+                    cursor += if vertical then rowHeight else height
                 end
             end
         end
 
-        local function Square(item: any, key: string, rect: any, color: Color3, filled: boolean, _thickness: number?): ()
-            Draw(item, key, "Square", { Position = Vector2.new(rect.X, rect.Y), Size = Vector2.new(rect.Width, rect.Height), Color = color, Filled = filled, Thickness = _thickness or Scale(), ZIndex = 2 })
+        local function Square(item: any, key: string, rect: any, color: Color3, filled: boolean, _thickness: number?, _context: any?): ()
+            Draw(item, key, "Square", { Position = Vector2.new(rect.X, rect.Y), Size = Vector2.new(rect.Width, rect.Height), Color = color, Filled = filled, Thickness = _thickness or Scale(_context), ZIndex = 2 }, _context)
         end
 
-        local function Line(item: any, key: string, first: Vector2, second: Vector2, color: Color3): ()
+        local function Line(item: any, key: string, first: Vector2, second: Vector2, color: Color3, _context: any?): ()
             if item.Kind == "Skeleton" then
                 item.HitLines = item.HitLines or {}
                 item.HitLines[key] = { first, second }
             end
-            Draw(item, key, "Line", { From = first, To = second, Color = color, Thickness = item.Thickness * Scale(), ZIndex = 3 })
+            Draw(item, key, "Line", { From = first, To = second, Color = color, Thickness = item.Thickness * Scale(_context), ZIndex = 3 }, _context)
         end
 
-        local function RenderItem(item: any): ()
-            local rect, scale = item.Rect, Scale()
+        local function RenderItem(item: any, _context: any?): ()
+            local rect, scale = item.Rect, Scale(_context)
+            local color = item.ResolvedColor or item.Color
+            local model = if _context then _context.Character else Model
+            local parts = if _context then _context.Parts else ModelParts
             if not rect then return end
             local position = Vector2.new(rect.X, rect.Y)
-            if item.Background then Square(item, "Background", rect, item.BackgroundColor, true) end
+            if item.Background then Square(item, "Background", rect, item.BackgroundColor, true, nil, _context) end
             if item.Kind == "Text" then
-                Draw(item, "Text", "Text", { Text = TextFor(item), Position = position + Vector2.new(rect.Width / 2, 1 * scale), Center = true, Color = item.Color, Size = item.Size * scale, Font = 2, Outline = item.Outline, ZIndex = 4 })
+                local lateral = item.Side == "Left" or item.Side == "Right"
+                local textPosition = position + Vector2.new(if lateral then 4 * scale else rect.Width / 2, (rect.Height - item.Size * scale) / 2)
+                textPosition = Vector2.new(math.floor(textPosition.X + 0.5), math.floor(textPosition.Y + 0.5))
+                Draw(item, "Text", "Text", { Text = TextFor(item, _context), Position = textPosition, Center = not lateral, Color = color, Size = item.Size * scale, Font = 2, Outline = item.Outline, ZIndex = 4 }, _context)
             elseif item.Kind == "Bar" then
                 local health = item.Id == "Health"
                 local data = Preview.Data
-                local value = if health then data.Health elseif item.Id == "Ammo" then data.Ammo else 80
-                local maximum = if health then math.max(1, data.MaxHealth) elseif item.Id == "Ammo" then math.max(1, data.MaxAmmo) else 100
+                local value = item.ResolvedValue or (if health then data.Health elseif item.Id == "Ammo" then data.Ammo else 80)
+                local maximum = item.ResolvedMaximum or (if health then math.max(1, data.MaxHealth) elseif item.Id == "Ammo" then math.max(1, data.MaxAmmo) else 100)
                 local ratio = math.clamp(value / maximum, 0, 1)
                 local vertical = item.Side == "Left" or item.Side == "Right"
-                Square(item, "Track", rect, Color3.fromRGB(36, 38, 47), true)
-                local segments = if health then 24 else 1
+                local track = { X = math.floor(rect.X + 0.5), Y = math.floor(rect.Y + 0.5) }
+                track.Width = math.max(1, math.floor(rect.X + rect.Width + 0.5) - track.X)
+                track.Height = math.max(1, math.floor(rect.Y + rect.Height + 0.5) - track.Y)
+                local inset = math.min(math.max(1, math.floor(scale + 0.5)), (track.Width - 1) // 2, (track.Height - 1) // 2)
+                local length = (if vertical then track.Height else track.Width) - inset * 2
+                Square(item, "Track", track, Color3.fromRGB(36, 38, 47), true, nil, _context)
+                local segments = math.min(if health then 24 else 1, length)
                 for index = 1, segments do
-                    local lower, upper = (index - 1) / segments, math.min(ratio, index / segments)
+                    local lower = math.floor(((index - 1) / segments) * length + 0.5)
+                    local upper = math.floor(math.min(ratio, index / segments) * length + 0.5)
                     if upper <= lower then continue end
                     local fill = {
-                        X = rect.X + scale, Y = rect.Y + scale,
-                        Width = math.max(1, rect.Width - 2 * scale), Height = math.max(1, rect.Height - 2 * scale),
+                        X = track.X + inset, Y = track.Y + inset,
+                        Width = track.Width - inset * 2, Height = track.Height - inset * 2,
                     }
                     if vertical then
-                        fill.Y += (1 - upper) * (rect.Height - 2 * scale)
-                        fill.Height = math.max(1, (upper - lower) * (rect.Height - 2 * scale))
+                        fill.Y += length - upper
+                        fill.Height = upper - lower
                     else
-                        fill.X += lower * (rect.Width - 2 * scale)
-                        fill.Width = math.max(1, (upper - lower) * (rect.Width - 2 * scale))
+                        fill.X += lower
+                        fill.Width = upper - lower
                     end
-                    Square(item, `Fill{index}`, fill, if health then Color3.fromRGB(255, 74, 86):Lerp(item.Color, upper) else item.Color, true)
+                    Square(item, `Fill{index}`, fill, if health then Color3.fromRGB(255, 74, 86):Lerp(color, upper / length) else color, true, nil, _context)
                 end
                 if health then
                     Draw(item, "Value", "Text", {
                         Text = if item.Format == "Percent" then `{math.floor(ratio * 100)}%` else tostring(math.floor(value)),
-                        Position = position + Vector2.new(rect.Width / 2, if item.Side == "Bottom" then rect.Height + 2 * scale else -13 * scale), Center = true,
-                        Color = Color3.new(1, 1, 1), Size = 10 * scale, Font = 2, Outline = item.Outline, ZIndex = 4,
-                    })
+                        Position = position + Vector2.new(rect.Width / 2, if item.Side == "Bottom" then rect.Height + 2 * scale else -(item.Size + 3) * scale), Center = true,
+                        Color = Color3.new(1, 1, 1), Size = item.Size * scale, Font = 2, Outline = item.Outline, ZIndex = 4,
+                    }, _context)
                 end
             elseif item.Kind == "Box" then
-                if item.Outline then Square(item, "Outline", rect, Color3.new(), false, (item.Thickness + 2) * scale) end
-                Square(item, "Box", rect, item.Color, false, item.Thickness * scale)
+                if item.Outline then Square(item, "Outline", rect, Color3.new(), false, (item.Thickness + 2) * scale, _context) end
+                Square(item, "Box", rect, color, false, item.Thickness * scale, _context)
             elseif item.Kind == "Icon" then
-                local points = if item.Id == "WeaponIcon" then {
+                local points = item.ResolvedSegments or (if item.Id == "WeaponIcon" then {
                     { 0.05, 0.4, 0.18, 0.4 }, { 0.18, 0.4, 0.24, 0.25 }, { 0.24, 0.25, 0.66, 0.25 },
                     { 0.4, 0.25, 0.43, 0.05 }, { 0.66, 0.25, 0.7, 0.4 }, { 0.7, 0.4, 0.96, 0.4 },
                     { 0.46, 0.4, 0.4, 0.75 }, { 0.55, 0.4, 0.65, 0.72 }, { 0.18, 0.4, 0.08, 0.7 },
@@ -11182,28 +11197,355 @@ do
                 } else {
                     { 0.2, 0.2, 0.8, 0.2 }, { 0.8, 0.2, 0.8, 0.4 }, { 0.8, 0.4, 0.45, 0.4 },
                     { 0.45, 0.4, 0.4, 0.8 }, { 0.4, 0.8, 0.25, 0.8 }, { 0.25, 0.8, 0.3, 0.4 },
-                }
+                })
                 for index, coordinates in points do
-                    Line(item, `Icon{index}`, position + Vector2.new(coordinates[1] * rect.Width, coordinates[2] * rect.Height), position + Vector2.new(coordinates[3] * rect.Width, coordinates[4] * rect.Height), item.Color)
+                    Line(item, `Icon{index}`, position + Vector2.new(coordinates[1] * rect.Width, coordinates[2] * rect.Height), position + Vector2.new(coordinates[3] * rect.Width, coordinates[4] * rect.Height), color, _context)
                 end
             elseif item.Kind == "Skeleton" then
-                local torso, head = Model:FindFirstChild("Torso"), Model:FindFirstChild("Head")
+                local torso, head = model:FindFirstChild("Torso"), model:FindFirstChild("Head")
                 if torso and torso:IsA("BasePart") and head and head:IsA("BasePart") then
-                    Line(item, "Spine", Project(head.Position), Project(torso.Position - torso.CFrame.UpVector * 0.8), item.Color)
+                    Line(item, "Spine", Project(head.Position, _context), Project(torso.Position - torso.CFrame.UpVector * 0.8, _context), color, _context)
                     for _, name in { "Left Arm", "Right Arm", "Left Leg", "Right Leg" } do
-                        local part = Model:FindFirstChild(name)
+                        local part = model:FindFirstChild(name)
                         if not part or not part:IsA("BasePart") then continue end
                         local upper = part.Position + part.CFrame.UpVector * part.Size.Y * 0.4
-                        Line(item, name .. "Joint", Project(torso.Position), Project(upper), item.Color)
-                        Line(item, name .. "Bone", Project(upper), Project(part.Position - part.CFrame.UpVector * part.Size.Y * 0.4), item.Color)
+                        Line(item, name .. "Joint", Project(torso.Position, _context), Project(upper, _context), color, _context)
+                        Line(item, name .. "Bone", Project(upper, _context), Project(part.Position - part.CFrame.UpVector * part.Size.Y * 0.4, _context), color, _context)
+                    end
+                else
+                    for index, names in {
+                        { "Head", "UpperTorso" }, { "UpperTorso", "LowerTorso" },
+                        { "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
+                        { "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
+                        { "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
+                        { "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
+                    } do
+                        local first, second = model:FindFirstChild(names[1]), model:FindFirstChild(names[2])
+                        if first and first:IsA("BasePart") and second and second:IsA("BasePart") then
+                            Line(item, `Joint{index}`, Project(first.Position, _context), Project(second.Position, _context), color, _context)
+                        end
                     end
                 end
             elseif item.Kind == "Hitboxes" then
-                for index, part in ModelParts do
-                    local point = Project(part.Position)
-                    Square(item, `Hitbox{index}`, { X = point.X - 5 * scale, Y = point.Y - 5 * scale, Width = 10 * scale, Height = 10 * scale }, item.Color, false)
+                for index, part in parts do
+                    local point = Project(part.Position, _context)
+                    Square(item, `Hitbox{index}`, { X = point.X - 5 * scale, Y = point.Y - 5 * scale, Width = 10 * scale, Height = 10 * scale }, color, false, nil, _context)
                 end
             end
+        end
+
+        function Preview:BindItem(itemId: string, provider: (ESPContext) -> ESPItemResult?): () -> ()
+            assert(self.Items[itemId], `Unknown ESP item: {itemId}`)
+            assert(type(provider) == "function", "Expected an ESP item provider")
+            self.Bindings[itemId] = provider
+            return function(): ()
+                if self.Bindings[itemId] == provider then self.Bindings[itemId] = nil end
+            end
+        end
+
+        function Preview:SetDataProvider(provider: ((ESPContext) -> { [string]: any })?): ()
+            assert(provider == nil or type(provider) == "function", "Expected an ESP data provider")
+            self.DataProvider = provider
+        end
+
+        function Preview:TrackPlayers(_options: { [string]: any }?): any
+            assert(not self.Destroyed, "Cannot attach players to a destroyed preview")
+            local options = _options or {}
+            local tracker = {
+                Enabled = options.Enabled ~= false, Destroyed = false, Updating = false,
+                IncludeLocalPlayer = options.IncludeLocalPlayer == true, TeamCheck = options.TeamCheck == true,
+                MaxDistance = options.MaxDistance or math.huge, TextScale = math.clamp(options.TextScale or 1, 0.5, 2),
+                Chams = options.Chams == true, Filter = options.Filter,
+                Targets = {}, Connections = {}, Errors = {},
+            }
+            local layer = New("ScreenGui", {
+                Name = Idx .. "Players", DisplayOrder = ScreenGui.DisplayOrder - 1,
+                ResetOnSpawn = false, IgnoreGuiInset = true, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+            })
+            ParentUI(layer)
+            tracker.Layer = layer
+
+            local function HideTarget(target: any): ()
+                target.Visible = false
+                for _, item in target.Items do
+                    for _, object in item.Drawings do object.Visible = false end
+                end
+                if target.Highlight then target.Highlight.Enabled = false end
+            end
+
+            local function DisconnectAll(connections: { RBXScriptConnection }): ()
+                for _, connection in connections do connection:Disconnect() end
+                table.clear(connections)
+            end
+
+            local function AttachCharacter(target: any, character: Model?): ()
+                DisconnectAll(target.CharacterConnections)
+                HideTarget(target)
+                target.Character, target.Parts, target.RemovingCharacter = character, nil, nil
+                if not character then return end
+                for _, signal in { character.ChildAdded, character.ChildRemoved } do
+                    table.insert(target.CharacterConnections, signal:Connect(function(): () target.Parts = nil end))
+                end
+            end
+
+            local function RemovePlayer(player: Player): ()
+                local target = tracker.Targets[player]
+                if not target then return end
+                target.Removed = true
+                HideTarget(target)
+                DisconnectAll(target.Connections)
+                DisconnectAll(target.CharacterConnections)
+                for _, item in target.Items do
+                    for _, object in item.Drawings do object:Remove() end
+                end
+                if target.Highlight then target.Highlight:Destroy() end
+                tracker.Targets[player] = nil
+            end
+
+            local function AddPlayer(player: Player): ()
+                if tracker.Destroyed or tracker.Targets[player] or (player == LocalPlayer and not tracker.IncludeLocalPlayer) then return end
+                local target = { Player = player, Items = {}, Connections = {}, CharacterConnections = {}, Revision = -1, Visible = false }
+                tracker.Targets[player] = target
+                table.insert(target.Connections, player.CharacterAdded:Connect(function(character: Model): ()
+                    setthreadidentity(8)
+                    AttachCharacter(target, character)
+                end))
+                table.insert(target.Connections, player.CharacterRemoving:Connect(function(character: Model): ()
+                    setthreadidentity(8)
+                    if target.Character == character then
+                        AttachCharacter(target, nil)
+                        target.RemovingCharacter = character
+                    end
+                end))
+                AttachCharacter(target, player.Character)
+            end
+
+            local function ProviderError(key: string, message: any): ()
+                local previous = tracker.Errors[key]
+                if previous and os.clock() - previous < 5 then return end
+                tracker.Errors[key] = os.clock()
+                warn(`[Z-Ware ESP / {key}] {tostring(message)}`)
+            end
+
+            local function CallProvider(provider: (...any) -> ...any, context: any, key: string): (boolean, any)
+                local success, value = pcall(provider, context)
+                if not success then ProviderError(key, value) end
+                return success, value
+            end
+
+            local function IsFinite(value: any): boolean
+                return type(value) == "number" and value == value and math.abs(value) < math.huge
+            end
+
+            local function DefaultValue(item: any, context: any): any
+                local supplied = context.Data[item.Id]
+                if supplied ~= nil then return supplied end
+                if item.Id == "Name" then return context.Player.DisplayName or context.Player.Name end
+                if item.Id == "Distance" then return `{math.floor(context.Distance)} m` end
+                if item.Id == "Health" then return { Value = context.Humanoid.Health, Max = context.Humanoid.MaxHealth } end
+                if item.Kind == "Box" or item.Kind == "Skeleton" or item.Kind == "Hitboxes" then return true end
+                if item.Id == "WeaponText" or item.Id == "WeaponIcon" then
+                    local tool = context.Character:FindFirstChildOfClass("Tool")
+                    return if tool then tool.Name else nil
+                end
+                return nil
+            end
+
+            local function ResolveItem(item: any, context: any): ()
+                if not item.ConfigEnabled then item.Enabled = false; return end
+                local provider = Preview.Bindings[item.Id]
+                local success, value = true, nil
+                if provider then success, value = CallProvider(provider, context, item.Id)
+                else value = DefaultValue(item, context) end
+                item.Enabled = false
+                item.ResolvedText, item.ResolvedValue, item.ResolvedMaximum = nil, nil, nil
+                item.ResolvedColor, item.ResolvedTransparency, item.ResolvedSegments = nil, nil, nil
+                if not success or value == nil or value == false then return end
+                if type(value) == "table" then
+                    if value.Visible == false then return end
+                    if value.Text ~= nil then item.ResolvedText = tostring(value.Text) end
+                    if IsFinite(value.Value) then item.ResolvedValue = value.Value end
+                    if value.Max ~= nil then
+                        if not IsFinite(value.Max) or value.Max <= 0 then ProviderError(item.Id, "Bar Max must be a positive finite number"); return end
+                        item.ResolvedMaximum = value.Max
+                    end
+                    if typeof(value.Color) == "Color3" then item.ResolvedColor = value.Color end
+                    if IsFinite(value.Transparency) then item.ResolvedTransparency = math.clamp(value.Transparency, 0, 1) end
+                    if value.Segments ~= nil then
+                        if type(value.Segments) ~= "table" or #value.Segments > 64 then ProviderError(item.Id, "Expected up to 64 icon segments"); return end
+                        for _, segment in value.Segments do
+                            if type(segment) ~= "table" or #segment ~= 4 then ProviderError(item.Id, "Icon segments require four coordinates"); return end
+                            for _, coordinate in segment do
+                                if not IsFinite(coordinate) or coordinate < 0 or coordinate > 1 then ProviderError(item.Id, "Icon coordinates must be between 0 and 1"); return end
+                            end
+                        end
+                        item.ResolvedSegments = value.Segments
+                    end
+                elseif type(value) == "string" then item.ResolvedText = value
+                elseif IsFinite(value) then item.ResolvedText, item.ResolvedValue = tostring(value), value
+                elseif value ~= true then ProviderError(item.Id, "Unsupported item provider result"); return end
+                if item.Kind == "Bar" then
+                    if not item.ResolvedValue then return end
+                    item.ResolvedMaximum = item.ResolvedMaximum or 100
+                elseif item.Kind == "Text" and item.ResolvedText == "" then return end
+                item.Enabled = true
+            end
+
+            local function SyncItems(target: any, team: string): ()
+                if target.Revision == Preview.Revision and target.Team == team then return end
+                local config = if team == Preview.Team then Preview:GetConfig() else Profiles[team] or Defaults
+                for _, itemId in Preview.ItemOrder do
+                    local definition = Preview.Items[itemId]
+                    local settings = config.Items[itemId] or Preview:GetConfig().Items[itemId]
+                    local item = target.Items[itemId]
+                    if not item then
+                        item = { Id = itemId, Kind = definition.Kind, Drawings = {}, Text = definition.Text }
+                        target.Items[itemId] = item
+                    end
+                    for key, value in settings do
+                        item[key] = if key == "Color" or key == "BackgroundColor" then Color3.fromHex(value) else value
+                    end
+                    item.ConfigEnabled = settings.Enabled
+                end
+                target.Config, target.Revision, target.Team = config, Preview.Revision, team
+            end
+
+            local function WorldBounds(target: any, camera: Camera): any
+                local minimum, maximum = Vector2.new(math.huge, math.huge), Vector2.new(-math.huge, -math.huge)
+                for _, part in target.Parts do
+                    for horizontal = -1, 1, 2 do
+                        for vertical = -1, 1, 2 do
+                            for depth = -1, 1, 2 do
+                                local world = part.CFrame:PointToWorldSpace(part.Size * Vector3.new(horizontal, vertical, depth) / 2)
+                                local projected = camera:WorldToViewportPoint(world)
+                                if projected.Z <= 0.1 then return nil end
+                                minimum = Vector2.new(math.min(minimum.X, projected.X), math.min(minimum.Y, projected.Y))
+                                maximum = Vector2.new(math.max(maximum.X, projected.X), math.max(maximum.Y, projected.Y))
+                            end
+                        end
+                    end
+                end
+                local size = camera.ViewportSize
+                if maximum.X < 0 or maximum.Y < 0 or minimum.X > size.X or minimum.Y > size.Y then return nil end
+                if minimum.X == math.huge or maximum.X - minimum.X < 1 or maximum.Y - minimum.Y < 1 then return nil end
+                return { X = minimum.X, Y = minimum.Y, Width = maximum.X - minimum.X, Height = maximum.Y - minimum.Y }
+            end
+
+            local function RenderPlayer(target: any, camera: Camera, origin: Vector3, deltaTime: number): ()
+                local player = target.Player
+                if player.Character == target.RemovingCharacter then return end
+                if player.Character ~= target.Character then AttachCharacter(target, player.Character) end
+                local character = target.Character
+                if not character or not character.Parent then return end
+                local humanoid = character:FindFirstChildOfClass("Humanoid")
+                local root = character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart
+                if not humanoid or not root or not root:IsA("BasePart") or humanoid.Health <= 0 then return end
+                local distance = (origin - root.Position).Magnitude
+                if distance > tracker.MaxDistance then return end
+                local team = if player ~= LocalPlayer and LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team then "Allies" else "Enemies"
+                if tracker.TeamCheck and team == "Allies" then return end
+                if not target.Parts then
+                    target.Parts = {}
+                    for _, child in character:GetChildren() do
+                        if child:IsA("BasePart") and child.Name ~= "HumanoidRootPart" and child.Transparency < 1 then table.insert(target.Parts, child) end
+                    end
+                end
+                local rect = WorldBounds(target, camera)
+                if not rect then return end
+                local context = {
+                    Player = player, Character = character, Humanoid = humanoid, RootPart = root,
+                    Camera = camera, Distance = distance, Team = team, DeltaTime = deltaTime, Data = {},
+                    Items = target.Items, Parts = target.Parts, Scale = tracker.TextScale, Layer = layer, ViewportSize = camera.ViewportSize,
+                }
+                if Preview.DataProvider then
+                    local success, data = CallProvider(Preview.DataProvider, context, "DataProvider")
+                    if not success or type(data) ~= "table" then return end
+                    context.Data = data
+                end
+                if tracker.Filter then
+                    local success, allowed = CallProvider(tracker.Filter, context, "Filter")
+                    if not success or allowed ~= true then return end
+                end
+                if tracker.Destroyed or target.Removed or target.Character ~= character then return end
+                SyncItems(target, team)
+                for _, itemId in Preview.ItemOrder do ResolveItem(target.Items[itemId], context) end
+                if tracker.Destroyed or target.Removed or target.Character ~= character then return end
+                Layout(rect, context)
+                for _, itemId in Preview.ItemOrder do
+                    local item = target.Items[itemId]
+                    if item.Enabled then RenderItem(item, context) end
+                end
+                target.Visible, target.Bounds = true, rect
+                if tracker.Chams then
+                    if not target.Highlight then
+                        target.Highlight = Instance.new("Highlight")
+                        target.Highlight.Parent = layer
+                    end
+                    target.Highlight.Adornee = character
+                    target.Highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+                    target.Highlight.FillColor = Color3.fromHex(target.Config.ModelColor)
+                    target.Highlight.OutlineColor = target.Highlight.FillColor
+                    target.Highlight.FillTransparency = target.Config.ModelTransparency
+                    target.Highlight.OutlineTransparency, target.Highlight.Enabled = 0.2, true
+                end
+            end
+
+            function tracker:SetEnabled(enabled: boolean): ()
+                self.Enabled = enabled
+                if not enabled then for _, target in self.Targets do HideTarget(target) end end
+            end
+
+            function tracker:SetIncludeLocalPlayer(enabled: boolean): ()
+                self.IncludeLocalPlayer = enabled
+                if enabled then AddPlayer(LocalPlayer) else RemovePlayer(LocalPlayer) end
+            end
+
+            function tracker:GetStats(): { [string]: number }
+                local counts = { Players = 0, Visible = 0 }
+                for _, target in self.Targets do
+                    counts.Players += 1
+                    if target.Visible then counts.Visible += 1 end
+                end
+                return counts
+            end
+
+            function tracker:Destroy(): ()
+                if self.Destroyed then return end
+                self.Destroyed = true
+                DisconnectAll(self.Connections)
+                local players = {}
+                for player in self.Targets do table.insert(players, player) end
+                for _, player in players do RemovePlayer(player) end
+                layer:Destroy()
+                local index = table.find(Preview.Trackers, self)
+                if index then table.remove(Preview.Trackers, index) end
+            end
+
+            table.insert(tracker.Connections, Players.PlayerAdded:Connect(function(player: Player): () setthreadidentity(8); AddPlayer(player) end))
+            table.insert(tracker.Connections, Players.PlayerRemoving:Connect(function(player: Player): () setthreadidentity(8); RemovePlayer(player) end))
+            for _, player in Players:GetPlayers() do AddPlayer(player) end
+            table.insert(tracker.Connections, RunService.RenderStepped:Connect(function(deltaTime: number): ()
+                setthreadidentity(8)
+                if tracker.Destroyed or tracker.Updating then return end
+                for _, target in tracker.Targets do HideTarget(target) end
+                if not tracker.Enabled or Library.Unloaded then return end
+                local camera = workspace.CurrentCamera
+                if not camera then return end
+                local localCharacter = LocalPlayer.Character
+                local localRoot = if localCharacter then localCharacter:FindFirstChild("HumanoidRootPart") else nil
+                local origin = if localRoot and localRoot:IsA("BasePart") then localRoot.Position else camera.CFrame.Position
+                tracker.Updating = true
+                for _, target in tracker.Targets do
+                    local success, message = pcall(RenderPlayer, target, camera, origin, deltaTime)
+                    if not success then
+                        HideTarget(target)
+                        ProviderError(target.Player.Name, message)
+                    end
+                end
+                tracker.Updating = false
+            end))
+            table.insert(self.Trackers, tracker)
+            return tracker
         end
 
         local function Hit(point: Vector2): any
@@ -11369,6 +11711,7 @@ do
         function Preview:Destroy(): ()
             if self.Destroyed then return end
             self.Destroyed = true
+            for index = #self.Trackers, 1, -1 do self.Trackers[index]:Destroy() end
             for _, connection in self.Connections do connection:Disconnect() end
             table.clear(self.Connections)
             for _, item in self.Items do
