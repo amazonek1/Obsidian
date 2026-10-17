@@ -10345,7 +10345,7 @@ do
         local Sides = { "Left", "Top", "Right", "Bottom" }
         local Accent = Info.AccentColor or Library.Scheme.AccentColor
         local Preview = {
-            Type = "ESPPreview", Destroyed = false, Visible = Info.Visible ~= false,
+            Type = "ESPPreview", Destroyed = false, Visible = Info.Visible ~= false, Height = Height,
             Connections = {}, Items = {}, ItemOrder = {}, Value = {},
             Callback = Info.Callback, Changed = nil, Team = "Enemies", Revision = 0,
             Bindings = {}, Trackers = {}, DataProvider = nil,
@@ -10499,7 +10499,14 @@ do
 
         local function Scale(_context: any?): number
             if _context then return _context.Scale end
-            return math.max(0.01, Holder.AbsoluteSize.Y / Height)
+            local scale = 1
+            local ancestor: Instance? = Stage
+            while ancestor do
+                local component = ancestor:FindFirstChildOfClass("UIScale")
+                if component then scale *= component.Scale end
+                ancestor = ancestor.Parent
+            end
+            return math.max(0.01, scale)
         end
 
         local function MousePoint(): Vector2
@@ -10985,6 +10992,20 @@ do
         end
         Connect(EnemyButton.Activated, function(): () Preview:SetTeam("Enemies") end)
         Connect(TeamButton.Activated, function(): () Preview:SetTeam("Allies") end)
+
+        function Preview:SetHeight(height: number): ()
+            assert(type(height) == "number" and height == height and math.abs(height) < math.huge, "Expected a finite preview height")
+            Height = math.max(180, math.floor(height))
+            self.Height = Height
+            if Expanded then
+                Holder.Size = UDim2.fromOffset(620, Height)
+                local scale = Holder:FindFirstChildOfClass("UIScale")
+                if scale then scale.Scale = math.min(1.5, (ScreenGui.AbsoluteSize.Y - 32) / Height, (ScreenGui.AbsoluteSize.X - 32) / 620) end
+            else
+                Holder.Size = UDim2.new(1, 0, 0, Height)
+            end
+            Groupbox:Resize()
+        end
 
         function Preview:SetExpanded(enabled: boolean): ()
             if Expanded == enabled then return end
