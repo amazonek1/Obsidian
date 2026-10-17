@@ -10343,13 +10343,17 @@ do
         local Groupbox = self
         local Height = math.max(300, Info.Height or 500)
         local Sides = { "Left", "Top", "Right", "Bottom" }
+        local Teams = { "Enemies", "Allies", "Local" }
         local BoxTypes = { "None", "2D Box", "3D Box", "Bounding Box" }
+        local Profiles, ProfileControls = {}, {}
+        local Defaults
         local Accent = Info.AccentColor or Library.Scheme.AccentColor
         local Preview = {
             Type = "ESPPreview", Destroyed = false, Visible = Info.Visible ~= false, Height = Height,
             Connections = {}, Items = {}, ItemOrder = {}, Value = {},
             Callback = Info.Callback, Changed = nil, Team = "Enemies", Revision = 0,
             Bindings = {}, Trackers = {}, DataProvider = nil,
+            ProfileSettings = table.clone(Info.Settings or { Enabled = true }), ApplyingProfile = false,
             Data = { Name = "Z-Ware User", Health = 65, MaxHealth = 100, Distance = 25, Ammo = 18, MaxAmmo = 30, Weapon = "AK-47", HitChance = 78 },
             ModelColor = Info.ModelColor or Color3.fromRGB(190, 194, 201),
             ModelTransparency = 0, ModelStyle = "Solid", Rotation = 0, Zoom = 1,
@@ -10401,11 +10405,16 @@ do
             return button
         end
 
-        local EnemyButton = Button(Toolbar, "Enemies", UDim2.fromOffset(0, 0), UDim2.new(0.37, -3, 1, 0))
-        local TeamButton = Button(Toolbar, "Allies", UDim2.new(0.37, 2, 0, 0), UDim2.new(0.25, -4, 1, 0))
-        local ItemsButton = Button(Toolbar, "Items", UDim2.new(0.62, 2, 0, 0), UDim2.new(0.23, -4, 1, 0))
-        local ExpandButton = Button(Toolbar, "+", UDim2.new(0.85, 2, 0, 0), UDim2.new(0.15, -2, 1, 0))
-        EnemyButton.TextColor3 = Accent
+        local TeamButtons = {}
+        for index, team in Teams do
+            local button = Button(Toolbar, team, UDim2.new((index - 1) * 0.25, 0, 0, 0), UDim2.new(0.25, -4, 1, 0))
+            button.TextScaled = true
+            New("UITextSizeConstraint", { MinTextSize = 8, MaxTextSize = 12, Parent = button })
+            button.TextColor3 = if team == Preview.Team then Accent else Library.Scheme.FontColor
+            TeamButtons[team] = button
+        end
+        local ItemsButton = Button(Toolbar, "Items", UDim2.new(0.75, 0, 0, 0), UDim2.new(0.18, -4, 1, 0))
+        local ExpandButton = Button(Toolbar, "+", UDim2.new(0.93, 0, 0, 0), UDim2.new(0.07, 0, 1, 0))
 
         local function CreateBlankR6(): Model
             local model = Instance.new("Model")
@@ -10532,10 +10541,11 @@ do
 
         local function Notify(itemId: string?): ()
             Preview.Revision += 1
-            Preview.Value = Preview:GetConfig()
+            Preview.Value = Preview:GetValue()
             if SuppressCallback then return end
-            Library:SafeCallback(Preview.Callback, Preview.Value, itemId, Preview)
-            Library:SafeCallback(Preview.Changed, Preview.Value, itemId, Preview)
+            local config = Preview:GetConfig()
+            Library:SafeCallback(Preview.Callback, config, itemId, Preview)
+            Library:SafeCallback(Preview.Changed, config, itemId, Preview)
         end
 
         local function CreateDrawing(item: any, key: string, className: string, _context: any?): any
@@ -10611,6 +10621,7 @@ do
             table.insert(self.ItemOrder, itemId)
             if RebuildChips then RebuildChips() end
             if RefreshChips then RefreshChips() end
+            if Defaults then Defaults.Items[itemId] = self:CloneConfig(self:GetConfig().Items[itemId]) end
             if self.GetConfig then Notify(itemId) end
             return item
         end
@@ -10631,8 +10642,16 @@ do
             Preview:AddItem(itemId, settings)
         end
 
+        function Preview:CloneConfig(value: any): any
+            if typeof(value) == "Color3" then return value:ToHex() end
+            if type(value) ~= "table" then return value end
+            local result = {}
+            for key, child in value do result[key] = self:CloneConfig(child) end
+            return result
+        end
+
         function Preview:GetConfig(): { [string]: any }
-            local config = { Version = 1, Items = {}, ModelColor = self.ModelColor:ToHex(), ModelTransparency = self.ModelTransparency, ModelStyle = self.ModelStyle }
+            local config = { Version = 2, Items = {}, Settings = self:CloneConfig(self.ProfileSettings), ModelColor = self.ModelColor:ToHex(), ModelTransparency = self.ModelTransparency, ModelStyle = self.ModelStyle }
             for _, itemId in self.ItemOrder do
                 local item = self.Items[itemId]
                 config.Items[itemId] = {
@@ -10643,6 +10662,77 @@ do
                 }
             end
             return config
+        end
+
+        function Preview:NormalizeProfile(config: { [string]: any }, team: string): { [string]: any }
+            local result = self:CloneConfig(Defaults)
+            if team ~= "Enemies" then result.Settings.Enabled = false end
+            for key, value in config do
+                if key == "Settings" then
+                    for setting, selection in value do result.Settings[setting] = self:CloneConfig(selection) end
+                elseif key == "Items" then
+                    for itemId, properties in value do
+                        if not self.Items[itemId] then continue end
+                        local item = result.Items[itemId] or self:GetConfig().Items[itemId]
+                        for property, selection in properties do item[property] = self:CloneConfig(selection) end
+                        result.Items[itemId] = item
+                    end
+                elseif key ~= "Profiles" and key ~= "Team" then result[key] = self:CloneConfig(value) end
+            end
+            return result
+        end
+
+        function Preview:GetProfile(team: string): { [string]: any }
+            assert(table.find(Teams, team), "Expected Enemies, Allies or Local")
+            if team == self.Team then return self:GetConfig() end
+            return self:NormalizeProfile(Profiles[team] or {}, team)
+        end
+
+        function Preview:GetValue(): { [string]: any }
+            local profiles = {}
+            for _, team in Teams do profiles[team] = self:GetProfile(team) end
+            return { Version = 2, Team = self.Team, Profiles = profiles }
+        end
+
+        function Preview:SetSettings(settings: { [string]: any }): ()
+            for key, value in settings do self.ProfileSettings[key] = self:CloneConfig(value) end
+            self:ApplyProfileControls()
+            Notify(nil)
+        end
+
+        function Preview:ApplyProfileControls(): ()
+            if self.ApplyingProfile then return end
+            self.ApplyingProfile = true
+            local success, message = pcall(function(): ()
+                for key, binding in ProfileControls do
+                    local control, value = binding.Control, self.ProfileSettings[key]
+                    if control.Type == "ColorPicker" then
+                        if control.Value:ToHex() ~= value then control:SetValueRGB(Color3.fromHex(value)) end
+                    elseif control.Value ~= value then control:SetValue(self:CloneConfig(value)) end
+                end
+            end)
+            self.ApplyingProfile = false
+            assert(success, message)
+        end
+
+        function Preview:BindProfileControls(controls: { [string]: any }): ()
+            for key, control in controls do
+                assert(not ProfileControls[key], `Profile control already bound: {key}`)
+                local default = self:CloneConfig(control.Value)
+                if Defaults.Settings[key] == nil then Defaults.Settings[key] = default end
+                if self.ProfileSettings[key] == nil then self.ProfileSettings[key] = self:CloneConfig(default) end
+                local binding = { Control = control, Previous = control.Changed }
+                binding.Handler = function(value: any): ()
+                    if self.ApplyingProfile or self.Destroyed then return end
+                    self.ProfileSettings[key] = self:CloneConfig(value)
+                    Notify(nil)
+                    Library:SafeCallback(binding.Previous, value)
+                end
+                ProfileControls[key] = binding
+                control:OnChanged(binding.Handler)
+            end
+            self:ApplyProfileControls()
+            Notify(nil)
         end
 
         function Preview:SetItem(itemId: string, properties: { [string]: any }): ()
@@ -10677,8 +10767,15 @@ do
 
         function Preview:SetValue(config: { [string]: any }): ()
             assert(type(config) == "table", "Expected an ESP configuration")
+            if type(config.Profiles) == "table" then
+                for _, team in Teams do Profiles[team] = self:NormalizeProfile(config.Profiles[team] or {}, team) end
+                self.Team = if table.find(Teams, config.Team) then config.Team else "Enemies"
+                self:SetValue(Profiles[self.Team])
+                return
+            end
             SuppressCallback = true
             local success, message = pcall(function()
+                if config.Settings then self.ProfileSettings = self:NormalizeProfile({ Settings = config.Settings }, self.Team).Settings end
                 if config.ModelColor then self.ModelColor = Color3.fromHex(config.ModelColor) end
                 if config.ModelTransparency then self.ModelTransparency = math.clamp(config.ModelTransparency, 0, 1) end
                 if config.ModelStyle == "Solid" or config.ModelStyle == "Neon" then self.ModelStyle = config.ModelStyle end
@@ -10690,9 +10787,11 @@ do
                     if type(values.BackgroundColor) == "string" then values.BackgroundColor = Color3.fromHex(values.BackgroundColor) end
                     self:SetItem(itemId, values)
                 end
+                ApplyModel()
+                self:ApplyProfileControls()
             end)
+            for team, button in TeamButtons do button.TextColor3 = if team == self.Team then Accent else Library.Scheme.FontColor end
             SuppressCallback = false
-            ApplyModel()
             assert(success, message)
             Notify(nil)
         end
@@ -10762,10 +10861,9 @@ do
             Notify(itemId)
         end
 
-        local Defaults = Preview:GetConfig()
-        local Profiles = {}
+        Defaults = Preview:GetConfig()
         function Preview:Reset(): ()
-            self:SetValue(Defaults)
+            self:SetValue(self:NormalizeProfile({}, self.Team))
             self.Rotation, self.Zoom = 0, 1
         end
 
@@ -11010,17 +11108,16 @@ do
             ItemsMenu:Toggle()
         end)
         function Preview:SetTeam(team: string): ()
-            assert(team == "Enemies" or team == "Allies", "Expected Enemies or Allies")
+            assert(table.find(Teams, team), "Expected Enemies, Allies or Local")
             if team == self.Team then return end
             Profiles[self.Team] = self:GetConfig()
+            local config = self:GetProfile(team)
             self.Team = team
-            self:SetValue(Profiles[team] or Defaults)
-            EnemyButton.TextColor3 = if team == "Enemies" then Accent else Library.Scheme.FontColor
-            TeamButton.TextColor3 = if team == "Allies" then Accent else Library.Scheme.FontColor
-            Notify(nil)
+            SettingsMenu:Close()
+            ItemsMenu:Close()
+            self:SetValue(config)
         end
-        Connect(EnemyButton.Activated, function(): () Preview:SetTeam("Enemies") end)
-        Connect(TeamButton.Activated, function(): () Preview:SetTeam("Allies") end)
+        for team, button in TeamButtons do Connect(button.Activated, function(): () Preview:SetTeam(team) end) end
 
         function Preview:SetHeight(height: number): ()
             assert(type(height) == "number" and height == height and math.abs(height) < math.huge, "Expected a finite preview height")
@@ -11501,10 +11598,10 @@ do
 
             local function SyncItems(target: any, team: string): ()
                 if target.Revision == Preview.Revision and target.Team == team then return end
-                local config = if team == Preview.Team then Preview:GetConfig() else Profiles[team] or Defaults
+                local config = Preview:GetProfile(team)
                 for _, itemId in Preview.ItemOrder do
                     local definition = Preview.Items[itemId]
-                    local settings = config.Items[itemId] or Preview:GetConfig().Items[itemId]
+                    local settings = config.Items[itemId] or Defaults.Items[itemId] or Preview:GetConfig().Items[itemId]
                     local item = target.Items[itemId]
                     if not item then
                         item = { Id = itemId, Kind = definition.Kind, Drawings = {}, Text = definition.Text }
@@ -11549,10 +11646,13 @@ do
                 local humanoid = character:FindFirstChildOfClass("Humanoid")
                 local root = character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart
                 if not humanoid or not root or not root:IsA("BasePart") or humanoid.Health <= 0 then return end
+                local team = if player == LocalPlayer then "Local" elseif LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team then "Allies" else "Enemies"
+                SyncItems(target, team)
+                local settings = target.Config.Settings
+                if settings.Enabled == false then return end
                 local distance = (origin - root.Position).Magnitude
-                if distance > tracker.MaxDistance then return end
-                local team = if player ~= LocalPlayer and LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team then "Allies" else "Enemies"
-                if tracker.TeamCheck and team == "Allies" then return end
+                if distance > math.min(tracker.MaxDistance, settings.MaxDistance or math.huge) then return end
+                if (tracker.TeamCheck or settings.TeamCheck) and team == "Allies" then return end
                 if not target.Parts then
                     target.Parts = {}
                     for _, child in character:GetChildren() do
@@ -11564,7 +11664,7 @@ do
                 local context = {
                     Player = player, Character = character, Humanoid = humanoid, RootPart = root,
                     Camera = camera, Distance = distance, Team = team, DeltaTime = deltaTime, Data = {},
-                    Items = target.Items, Parts = target.Parts, Scale = tracker.TextScale, Layer = layer, ViewportSize = camera.ViewportSize,
+                    Items = target.Items, Parts = target.Parts, Scale = settings.TextScale or tracker.TextScale, Layer = layer, ViewportSize = camera.ViewportSize,
                 }
                 if Preview.DataProvider then
                     local success, data = CallProvider(Preview.DataProvider, context, "DataProvider")
@@ -11585,7 +11685,7 @@ do
                     if item.Enabled then RenderItem(item, context) end
                 end
                 target.Visible, target.Bounds = true, rect
-                if tracker.Chams then
+                if tracker.Chams and settings.Chams ~= false then
                     if not target.Highlight then
                         target.Highlight = Instance.new("Highlight")
                         target.Highlight.Parent = layer
@@ -11835,6 +11935,10 @@ do
             for index = #self.Trackers, 1, -1 do self.Trackers[index]:Destroy() end
             for _, connection in self.Connections do connection:Disconnect() end
             table.clear(self.Connections)
+            for _, binding in ProfileControls do
+                if binding.Control.Changed == binding.Handler then binding.Control:OnChanged(binding.Previous) end
+            end
+            table.clear(ProfileControls)
             for _, item in self.Items do
                 if item.Tween then item.Tween:Cancel(); item.Tween:Destroy() end
                 for _, object in item.Drawings do object:Remove() end
@@ -11858,7 +11962,7 @@ do
         end
         Preview.Holder, Preview.Base, Preview.ViewportFrame, Preview.Object = Holder, Holder, ViewportFrame, Model
         Preview.SettingsMenu, Preview.ItemsMenu = SettingsMenu, ItemsMenu
-        Preview.Value = Preview:GetConfig()
+        Preview.Value = Preview:GetValue()
         Options[Idx] = Preview
         table.insert(Groupbox.Elements, Preview)
         Groupbox:Resize()
