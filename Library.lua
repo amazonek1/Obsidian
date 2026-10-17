@@ -10343,6 +10343,7 @@ do
         local Groupbox = self
         local Height = math.max(300, Info.Height or 500)
         local Sides = { "Left", "Top", "Right", "Bottom" }
+        local BoxTypes = { "None", "2D Box", "3D Box", "Bounding Box" }
         local Accent = Info.AccentColor or Library.Scheme.AccentColor
         local Preview = {
             Type = "ESPPreview", Destroyed = false, Visible = Info.Visible ~= false, Height = Height,
@@ -10599,10 +10600,11 @@ do
                 Transparency = definition.Transparency or 0, Size = definition.Size or 12,
                 Outline = definition.Outline ~= false, Background = definition.Background == true,
                 BackgroundColor = definition.BackgroundColor or Color3.fromRGB(20, 22, 29),
-                Thickness = definition.Thickness or 2, Format = "Absolute", Drawings = {},
+                Thickness = definition.Thickness or 2, Format = "Absolute", BoxType = definition.BoxType or "Bounding Box", Drawings = {},
                 Hover = New("Frame", { BackgroundColor3 = Accent, BackgroundTransparency = 1, Visible = false, ZIndex = 2, Parent = HoverLayer }),
             }
             assert(table.find(Sides, item.Side), "Invalid ESP item side")
+            assert(table.find(BoxTypes, item.BoxType), "Invalid ESP box type")
             New("UICorner", { CornerRadius = UDim.new(0, 3), Parent = item.Hover })
             self.Items[itemId] = item
             if definition.Callback then self.Bindings[itemId] = definition.Callback end
@@ -10637,7 +10639,7 @@ do
                     Enabled = item.Enabled, Side = item.Side, Order = item.Order, Color = item.Color:ToHex(),
                     Transparency = item.Transparency, Size = item.Size, Outline = item.Outline,
                     Background = item.Background, BackgroundColor = item.BackgroundColor:ToHex(),
-                    Thickness = item.Thickness, Format = item.Format, Text = item.Text,
+                    Thickness = item.Thickness, Format = item.Format, BoxType = item.BoxType, Text = item.Text,
                 }
             end
             return config
@@ -10663,6 +10665,9 @@ do
                 elseif property == "Format" then
                     assert(value == "Absolute" or value == "Percent", "Invalid value format")
                     item.Format = value
+                elseif property == "BoxType" then
+                    assert(table.find(BoxTypes, value), "Invalid ESP box type")
+                    item.BoxType = value
                 end
             end
             if RefreshChips then RefreshChips() end
@@ -10680,6 +10685,7 @@ do
                 for itemId, properties in config.Items or {} do
                     if not self.Items[itemId] then continue end
                     local values = table.clone(properties)
+                    if self.Items[itemId].Kind == "Box" and values.BoxType == nil then values.BoxType = "Bounding Box" end
                     if type(values.Color) == "string" then values.Color = Color3.fromHex(values.Color) end
                     if type(values.BackgroundColor) == "string" then values.BackgroundColor = Color3.fromHex(values.BackgroundColor) end
                     self:SetItem(itemId, values)
@@ -10828,6 +10834,15 @@ do
         local SampleText = New("TextBox", { BackgroundColor3 = Color3.fromRGB(31, 32, 41), Position = UDim2.fromOffset(12, 475), Size = UDim2.fromOffset(312, 26), PlaceholderText = "Preview text", TextSize = 12, ClearTextOnFocus = false, Parent = Settings })
         New("UICorner", { CornerRadius = UDim.new(0, 4), Parent = SampleText })
         local ResetItem = Button(Settings, "Reset element", UDim2.fromOffset(12, 509), UDim2.fromOffset(312, 24))
+        local BoxTypeButtons = {}
+        for index, boxType in BoxTypes do
+            local button = Button(Settings, boxType, UDim2.fromOffset(12 + (index - 1) % 2 * 162, 475 + (index - 1) // 2 * 32), UDim2.fromOffset(150, 26))
+            button.Visible = false
+            BoxTypeButtons[boxType] = button
+            Connect(button.Activated, function(): ()
+                if Selected and Selected.Kind == "Box" then Preview:SetItem(Selected.Id, { BoxType = boxType }) end
+            end)
+        end
         local EditHue, EditSaturation, EditValue = 0, 1, 1
 
         RefreshSettings = function(): ()
@@ -10844,7 +10859,16 @@ do
             BackgroundButton.Text = `Background                         {if Selected.Background then "ON" else "OFF"}`
             OutlineButton.Text = `Shadow / outline                   {if Selected.Outline then "ON" else "OFF"}`
             SideButton.Text = `Position                                  {Selected.Side} ›`
-            FormatButton.Text = `Format                                   {Selected.Format} ›`
+            FormatButton.Text = if Selected.Kind == "Box" then `Box Type                              {Selected.BoxType} ›`
+                else `Format                                   {Selected.Format} ›`
+            local box = Selected.Kind == "Box"
+            SampleText.Visible = not box
+            ResetItem.Position = UDim2.fromOffset(12, if box then 543 else 509)
+            Settings.CanvasSize = UDim2.fromOffset(0, if box then 576 else 540)
+            for boxType, button in BoxTypeButtons do
+                button.Visible = box
+                button.TextColor3 = if Selected.BoxType == boxType then Accent else Library.Scheme.FontColor
+            end
             SizeLabel.Text = if Selected.Kind == "Bar" or Selected.Kind == "Box" then `Thickness: {Selected.Thickness}` else `Size: {Selected.Size}`
             EnabledButton.Text = if Selected.Enabled then "Enabled" else "Disabled"
             EnabledButton.TextColor3 = if Selected.Enabled then Accent else Color3.fromRGB(140, 143, 153)
@@ -10896,7 +10920,12 @@ do
             if Selected then Preview:SetItem(Selected.Id, { Side = Sides[(table.find(Sides, Selected.Side) or 1) % #Sides + 1] }) end
         end)
         Connect(FormatButton.Activated, function(): ()
-            if Selected then Preview:SetItem(Selected.Id, { Format = if Selected.Format == "Absolute" then "Percent" else "Absolute" }) end
+            if not Selected then return end
+            if Selected.Kind == "Box" then
+                Preview:SetItem(Selected.Id, { BoxType = BoxTypes[(table.find(BoxTypes, Selected.BoxType) or #BoxTypes) % #BoxTypes + 1] })
+            else
+                Preview:SetItem(Selected.Id, { Format = if Selected.Format == "Absolute" then "Percent" else "Absolute" })
+            end
         end)
         local function ChangeSize(amount: number): ()
             if not Selected then return end
@@ -11092,6 +11121,10 @@ do
                     if not item.Enabled or item.Side ~= side then continue end
                     if item.Kind == "Box" or item.Kind == "Skeleton" or item.Kind == "Hitboxes" then
                         item.Rect = table.clone(rect)
+                        if item.Kind == "Box" and item.BoxType == "2D Box" then
+                            item.Rect.Width = rect.Height * 0.55
+                            item.Rect.X = rect.X + (rect.Width - item.Rect.Width) / 2
+                        end
                     elseif item.Kind == "Bar" then table.insert(bars, item)
                     else table.insert(labels, item) end
                 end
@@ -11141,12 +11174,66 @@ do
             Draw(item, key, "Square", { Position = Vector2.new(rect.X, rect.Y), Size = Vector2.new(rect.Width, rect.Height), Color = color, Filled = filled, Thickness = _thickness or Scale(_context), ZIndex = 2 }, _context)
         end
 
-        local function Line(item: any, key: string, first: Vector2, second: Vector2, color: Color3, _context: any?): ()
-            if item.Kind == "Skeleton" then
+        local function Line(item: any, key: string, first: Vector2, second: Vector2, color: Color3, _context: any?, _thickness: number?): ()
+            if item.Kind == "Skeleton" or item.Kind == "Box" then
                 item.HitLines = item.HitLines or {}
                 item.HitLines[key] = { first, second }
             end
-            Draw(item, key, "Line", { From = first, To = second, Color = color, Thickness = item.Thickness * Scale(_context), ZIndex = 3 }, _context)
+            Draw(item, key, "Line", { From = first, To = second, Color = color, Thickness = (_thickness or item.Thickness) * Scale(_context), ZIndex = 3 }, _context)
+        end
+
+        function Preview:GetBoxCorners(_context: any?): { Vector2 }?
+            local parts = if _context then _context.Parts else ModelParts
+            local frame = if _context then _context.RootPart.CFrame else Model:GetPivot()
+            local minimum, maximum = Vector3.new(math.huge, math.huge, math.huge), Vector3.new(-math.huge, -math.huge, -math.huge)
+            for _, part in parts do
+                for horizontal = -1, 1, 2 do
+                    for vertical = -1, 1, 2 do
+                        for depth = -1, 1, 2 do
+                            local point = frame:PointToObjectSpace(part.CFrame:PointToWorldSpace(part.Size * Vector3.new(horizontal, vertical, depth) / 2))
+                            minimum, maximum = minimum:Min(point), maximum:Max(point)
+                        end
+                    end
+                end
+            end
+            if minimum.X == math.huge then return nil end
+            local camera = if _context then _context.Camera else Camera
+            local corners = {}
+            for _, offset in {
+                Vector3.new(0, 0, 0), Vector3.new(1, 0, 0), Vector3.new(1, 1, 0), Vector3.new(0, 1, 0),
+                Vector3.new(0, 0, 1), Vector3.new(1, 0, 1), Vector3.new(1, 1, 1), Vector3.new(0, 1, 1),
+            } do
+                local point = frame:PointToWorldSpace(minimum + (maximum - minimum) * offset)
+                if camera.CFrame:PointToObjectSpace(point).Z >= -0.05 then return nil end
+                table.insert(corners, Project(point, _context))
+            end
+            return corners
+        end
+
+        function Preview:RenderBox(item: any, _context: any?): ()
+            local boxType, rect = item.BoxType or "Bounding Box", item.Rect
+            item.HitLines, item.BoxRect = nil, nil
+            if boxType == "None" then return end
+            local color, scale = item.ResolvedColor or item.Color, Scale(_context)
+            if boxType == "3D Box" then
+                local corners = self:GetBoxCorners(_context)
+                if not corners then return end
+                for index, edge in {
+                    { 1, 2 }, { 2, 3 }, { 3, 4 }, { 4, 1 }, { 5, 6 }, { 6, 7 }, { 7, 8 }, { 8, 5 },
+                    { 1, 5 }, { 2, 6 }, { 3, 7 }, { 4, 8 },
+                } do
+                    if item.Outline then Line(item, `BoxOutline{index}`, corners[edge[1]], corners[edge[2]], Color3.new(), _context, item.Thickness + 2) end
+                    Line(item, `BoxEdge{index}`, corners[edge[1]], corners[edge[2]], color, _context)
+                end
+                return
+            end
+            if boxType == "2D Box" then
+                local width = rect.Height * 0.55
+                rect = { X = rect.X + (rect.Width - width) / 2, Y = rect.Y, Width = width, Height = rect.Height }
+            end
+            item.BoxRect = rect
+            if item.Outline then Square(item, "Outline", rect, Color3.new(), false, (item.Thickness + 2) * scale, _context) end
+            Square(item, "Box", rect, color, false, item.Thickness * scale, _context)
         end
 
         local function RenderItem(item: any, _context: any?): ()
@@ -11155,6 +11242,7 @@ do
             local model = if _context then _context.Character else Model
             local parts = if _context then _context.Parts else ModelParts
             if not rect then return end
+            if item.Kind == "Box" and item.BoxType == "None" then item.HitLines, item.BoxRect = nil, nil; return end
             local position = Vector2.new(rect.X, rect.Y)
             if item.Background then Square(item, "Background", rect, item.BackgroundColor, true, nil, _context) end
             if item.Kind == "Text" then
@@ -11201,8 +11289,7 @@ do
                     }, _context)
                 end
             elseif item.Kind == "Box" then
-                if item.Outline then Square(item, "Outline", rect, Color3.new(), false, (item.Thickness + 2) * scale, _context) end
-                Square(item, "Box", rect, color, false, item.Thickness * scale, _context)
+                Preview:RenderBox(item, _context)
             elseif item.Kind == "Icon" then
                 local points = item.ResolvedSegments or (if item.Id == "WeaponIcon" then {
                     { 0.05, 0.4, 0.18, 0.4 }, { 0.18, 0.4, 0.24, 0.25 }, { 0.24, 0.25, 0.66, 0.25 },
@@ -11426,6 +11513,7 @@ do
                     for key, value in settings do
                         item[key] = if key == "Color" or key == "BackgroundColor" then Color3.fromHex(value) else value
                     end
+                    if item.Kind == "Box" then item.BoxType = settings.BoxType or "Bounding Box" end
                     item.ConfigEnabled = settings.Enabled
                 end
                 target.Config, target.Revision, target.Team = config, Preview.Revision, team
@@ -11578,11 +11666,23 @@ do
             local found = nil
             for _, itemId in Preview.ItemOrder do
                 local item = Preview.Items[itemId]
-                if not item.Enabled or not Contains(item.Rect, point) then continue end
+                if not item.Enabled or (not (item.Kind == "Box" and item.BoxType == "3D Box") and not Contains(item.Rect, point)) then continue end
                 if item.Kind == "Box" then
-                    local rect = item.Rect
-                    local edge = math.min(point.X - rect.X, rect.X + rect.Width - point.X, point.Y - rect.Y, rect.Y + rect.Height - point.Y)
-                    if edge > 5 * Scale() then continue end
+                    if item.BoxType == "None" then continue end
+                    if item.BoxType == "3D Box" then
+                        local nearEdge = false
+                        for _, segment in item.HitLines or {} do
+                            local direction = segment[2] - segment[1]
+                            local progress = math.clamp((point - segment[1]):Dot(direction) / math.max(0.01, direction:Dot(direction)), 0, 1)
+                            if (point - segment[1] - direction * progress).Magnitude <= 5 * Scale() then nearEdge = true; break end
+                        end
+                        if not nearEdge then continue end
+                    else
+                        local rect = item.BoxRect or item.Rect
+                        if not Contains(rect, point) then continue end
+                        local edge = math.min(point.X - rect.X, rect.X + rect.Width - point.X, point.Y - rect.Y, rect.Y + rect.Height - point.Y)
+                        if edge > 5 * Scale() then continue end
+                    end
                 elseif item.Kind == "Skeleton" then
                     local nearBone = false
                     for _, segment in item.HitLines or {} do
