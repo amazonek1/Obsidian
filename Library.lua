@@ -10354,6 +10354,7 @@ do
             Callback = Info.Callback, Changed = nil, Team = "Enemies", Revision = 0,
             Bindings = {}, Trackers = {}, DataProvider = nil,
             ProfileSettings = table.clone(Info.Settings or { Enabled = true }), ApplyingProfile = false,
+            AnimationTime = 0,
             Data = { Name = "Z-Ware User", Health = 65, MaxHealth = 100, Distance = 25, Ammo = 18, MaxAmmo = 30, Weapon = "AK-47", HitChance = 78 },
             ModelColor = Info.ModelColor or Color3.fromRGB(190, 194, 201),
             ModelTransparency = 0, ModelStyle = "Solid", Rotation = 0, Zoom = 1,
@@ -10373,6 +10374,10 @@ do
             Ambient = Color3.fromRGB(185, 185, 195), LightColor = Color3.new(1, 1, 1),
             LightDirection = Vector3.new(-1, -1, -1), ZIndex = 1, Parent = Stage,
         })
+        local ChamsViewport = New("ViewportFrame", {
+            Name = "ChamsFill", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Visible = false,
+            Ambient = Color3.new(1, 1, 1), LightColor = Color3.new(), ZIndex = 2, Parent = Stage,
+        })
         local HoverLayer = New("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 2, Parent = Stage })
         local DrawingClip = New("Frame", { BackgroundTransparency = 1, ClipsDescendants = true, Size = UDim2.fromScale(1, 1), ZIndex = 3, Parent = Stage })
         local Hint = New("TextLabel", {
@@ -10386,6 +10391,9 @@ do
         Camera.FieldOfView = 35
         Camera.Parent = ViewportFrame
         ViewportFrame.CurrentCamera = Camera
+        ChamsViewport.CurrentCamera = Camera
+        local ChamsWorld = Instance.new("WorldModel")
+        ChamsWorld.Parent = ChamsViewport
 
         local function Connect(signal: RBXScriptSignal, callback: (...any) -> ()): RBXScriptConnection
             local connection = signal:Connect(function(...: any)
@@ -10465,6 +10473,7 @@ do
         local Model = CreateBlankR6()
         Model.Parent = World
         local ModelParts = {}
+        local ChamsModel
         local BasePivot = CFrame.new()
         local ModelSize = Vector3.new(4, 5, 1)
         local ModelCenter = Vector3.new(0, -0.5, 0)
@@ -10484,6 +10493,8 @@ do
         local ItemsMenu: any
 
         local function ReadModel(): ()
+            if ChamsModel then ChamsModel:Destroy(); ChamsModel, Preview.ChamsObject = nil, nil end
+            ChamsViewport.Visible = false
             table.clear(ModelParts)
             for _, descendant in Model:GetDescendants() do
                 if descendant:IsA("Script") or descendant:IsA("LocalScript") then
@@ -10499,12 +10510,63 @@ do
             ModelSize, ModelCenter, BasePivot = size, bounds.Position, Model:GetPivot()
         end
 
-        local function ApplyModel(): ()
-            for _, part in ModelParts do
-                part.Color = Preview.ModelColor
-                part.Material = if Preview.ModelStyle == "Neon" then Enum.Material.Neon else Enum.Material.SmoothPlastic
-                part.Transparency = Preview.ModelTransparency
+        function Preview:ResolveChamsAppearance(): any
+            local settings = self.ProfileSettings
+            local material = if self.ModelStyle == "Neon" then Enum.Material.Neon else Enum.Material.SmoothPlastic
+            local appearance = { Enabled = settings.Chams == true, Material = material, Color = self.ModelColor, Transparency = self.ModelTransparency }
+            if not appearance.Enabled then return appearance end
+            local fill = (if settings.VisibleColor then Color3.fromHex(settings.VisibleColor) else self.ModelColor):Lerp(Color3.new(1, 1, 1), 0.15)
+            local phase = 0.5 + 0.5 * math.sin(self.AnimationTime * (settings.EffectSpeed or 4))
+            local opacity = math.clamp((settings.VisibleOpacity or 25) / 100, 0, 1)
+            if settings.Effect == "Pulse" then
+                fill = fill:Lerp(Color3.new(1, 1, 1), phase * 0.45)
+            elseif settings.Effect == "Breathe" then
+                fill = fill:Lerp(Color3.new(), (1 - phase) * 0.3)
+                opacity = math.max(0, opacity - (1 - phase) * 0.25)
+            elseif settings.Effect == "Rainbow" then
+                fill = Color3.fromHSV(self.AnimationTime * (settings.EffectSpeed or 4) * 0.08 % 1, 0.75, 1):Lerp(Color3.new(1, 1, 1), 0.15)
             end
+            local selected = ({ ForceField = Enum.Material.ForceField, Plastic = Enum.Material.Plastic, Glass = Enum.Material.Glass, Neon = Enum.Material.Neon })[settings.Material]
+            if selected then appearance.Material, appearance.Color = selected, fill end
+            appearance.FillColor, appearance.FillTransparency = fill, 1 - opacity * (1 - self.ModelTransparency)
+            return appearance
+        end
+
+        function Preview:UpdateModelAppearance(): ()
+            local appearance = self:ResolveChamsAppearance()
+            for _, part in ModelParts do
+                if part.Color ~= appearance.Color then part.Color = appearance.Color end
+                if part.Material ~= appearance.Material then part.Material = appearance.Material end
+                if part.Transparency ~= appearance.Transparency then part.Transparency = appearance.Transparency end
+            end
+            ChamsViewport.Visible = appearance.Enabled and appearance.FillTransparency < 1
+            if not ChamsViewport.Visible then return end
+            if not ChamsModel then
+                ChamsModel = Model:Clone()
+                ChamsModel.Name = "PreviewChamsFill"
+                for _, descendant in ChamsModel:GetDescendants() do
+                    if descendant:IsA("BasePart") then
+                        descendant.Anchored, descendant.CanCollide, descendant.CastShadow = true, false, false
+                        descendant.Color, descendant.Material, descendant.Reflectance = Color3.new(1, 1, 1), Enum.Material.SmoothPlastic, 0
+                        descendant.Transparency = if descendant.Name == "HumanoidRootPart" then 1 else 0
+                        descendant.LocalTransparencyModifier = 0
+                        if descendant:IsA("MeshPart") then descendant.TextureID = "" end
+                    elseif descendant:IsA("SpecialMesh") then
+                        descendant.TextureId, descendant.VertexColor = "", Vector3.new(1, 1, 1)
+                    elseif descendant:IsA("Decal") or descendant:IsA("Texture") or descendant:IsA("SurfaceAppearance")
+                        or descendant:IsA("BodyColors") or descendant:IsA("Clothing") or descendant:IsA("ShirtGraphic") then
+                        descendant:Destroy()
+                    end
+                end
+                ChamsModel.Parent = ChamsWorld
+                self.ChamsObject = ChamsModel
+            end
+            ChamsViewport.ImageColor3, ChamsViewport.ImageTransparency = appearance.FillColor, appearance.FillTransparency
+            ChamsModel:PivotTo(Model:GetPivot())
+        end
+
+        local function ApplyModel(): ()
+            Preview:UpdateModelAppearance()
         end
 
         local function Scale(_context: any?): number
@@ -11883,7 +11945,8 @@ do
             end
         end)
 
-        Connect(RunService.RenderStepped, function(): ()
+        Connect(RunService.RenderStepped, function(deltaTime: number): ()
+            Preview.AnimationTime += deltaTime
             for _, itemId in Preview.ItemOrder do
                 local item = Preview.Items[itemId]
                 for _, object in item.Drawings do object.Visible = false end
@@ -11901,6 +11964,7 @@ do
             local distance = extent / (2 * math.tan(math.rad(Camera.FieldOfView / 2)) * 0.64 * Preview.Zoom) + ModelSize.Z
             Camera.CFrame = CFrame.lookAt(ModelCenter + Vector3.new(0, 0, -distance), ModelCenter)
             Model:PivotTo(CFrame.new(ModelCenter) * CFrame.Angles(0, math.rad(Preview.Rotation), 0) * CFrame.new(-ModelCenter) * BasePivot)
+            Preview:UpdateModelAppearance()
             local rect = ModelRect()
             Preview.Bounds = rect
             Layout(rect)
@@ -11961,6 +12025,7 @@ do
             for itemId, properties in Info.Items do Preview:SetItem(itemId, properties) end
         end
         Preview.Holder, Preview.Base, Preview.ViewportFrame, Preview.Object = Holder, Holder, ViewportFrame, Model
+        Preview.ChamsViewportFrame = ChamsViewport
         Preview.SettingsMenu, Preview.ItemsMenu = SettingsMenu, ItemsMenu
         Preview.Value = Preview:GetValue()
         Options[Idx] = Preview
