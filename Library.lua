@@ -234,6 +234,9 @@ local Library = {
     --// Notifications \\--
     Notifications = {},
     NotifySide = "Right",
+    NotifyStyle = "Compact",
+    NotifyLimit = 8,
+    NotifyMaxWidth = 860,
     NotifyTweenInfo = TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
 
     --// Dialogues \\--
@@ -437,6 +440,8 @@ local Templates = {
 
         CornerRadius = 4,
         NotifySide = "Right",
+        NotifyStyle = "Compact",
+        NotifyLimit = 8,
         ShowCustomCursor = false,
 
         Font = Enum.Font.Code,
@@ -2245,6 +2250,12 @@ do
         })
     )
 end
+
+Library:GiveSignal(ScreenGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(function(): ()
+    setthreadidentity(8)
+    for _, notification in Library.Notifications do notification:Resize() end
+    if Library.UpdateNotificationPositions then Library:UpdateNotificationPositions(true) end
+end))
 
 --// Icons \\--
 local CheckIcon, ArrowIcon, PriorityUpIcon, PriorityDownIcon, ResizeIcon, KeyIcon, MoveIcon, PopOutIcon, CloseIcon
@@ -12060,6 +12071,8 @@ do
         local Viewport = {
             Connections = {},
             Destroyed = false,
+            Hovered = false,
+            ScrollStates = {},
 
             Object = ViewportObject :: PVInstance,
             Camera = if not Info.Camera then Instance.new("Camera") else Info.Camera,
@@ -12173,8 +12186,30 @@ do
             Box.BorderColor3 = Library.Scheme[ColorName]
         end
 
+        function Viewport:SetScrollLocked(locked: boolean): ()
+            setthreadidentity(8)
+            if locked then
+                if Viewport.Destroyed then return end
+                local ancestor = Groupbox.Container
+                while ancestor do
+                    if ancestor:IsA("ScrollingFrame") and Viewport.ScrollStates[ancestor] == nil then
+                        Viewport.ScrollStates[ancestor] = ancestor.ScrollingEnabled
+                        ancestor.ScrollingEnabled = false
+                    end
+                    ancestor = ancestor.Parent
+                end
+            else
+                for scrollingFrame, enabled in Viewport.ScrollStates do
+                    scrollingFrame.ScrollingEnabled = enabled
+                end
+                table.clear(Viewport.ScrollStates)
+            end
+        end
+
         table.insert(Viewport.Connections, Box.MouseEnter:Connect(function()
             setthreadidentity(8)
+            if Viewport.Destroyed or Library.Unloaded then return end
+            Viewport.Hovered = true
             if Viewport.Clickable then
                 TweenService:Create(Box, Library.TweenInfo, {
                     BackgroundColor3 = Library:GetBetterColor(Library.Scheme.MainColor, 1),
@@ -12182,25 +12217,20 @@ do
             end
 
             if Viewport.Interactive then
-                for _, Side in Groupbox.Tab.Sides do
-                    Side.ScrollingEnabled = false
-                end
+                Viewport:SetScrollLocked(true)
             end
         end))
 
         table.insert(Viewport.Connections, Box.MouseLeave:Connect(function()
             setthreadidentity(8)
+            Viewport.Hovered = false
             if Viewport.Clickable then
                 TweenService:Create(Box, Library.TweenInfo, {
                     BackgroundColor3 = Library.Scheme.MainColor,
                 }):Play()
             end
 
-            if Viewport.Interactive then
-                for _, Side in Groupbox.Tab.Sides do
-                    Side.ScrollingEnabled = true
-                end
-            end
+            Viewport:SetScrollLocked(false)
         end))
 
         table.insert(Viewport.Connections, Box.InputBegan:Connect(function(input)
@@ -12366,6 +12396,10 @@ do
             setthreadidentity(8)
             Viewport.Interactive = Interactive
             Box.Active = Interactive or Viewport.Clickable
+            if not Interactive then
+                Dragging, Pinching = false, false
+            end
+            Viewport:SetScrollLocked(Interactive and Viewport.Hovered)
         end
 
         function Viewport:SetClickable(Clickable: boolean)
@@ -12403,6 +12437,11 @@ do
         function Viewport:SetVisible(Visible: boolean)
             setthreadidentity(8)
             Viewport.Visible = Visible
+            if not Visible then
+                Viewport.Hovered = false
+                Dragging, Pinching = false, false
+                Viewport:SetScrollLocked(false)
+            end
 
             Holder.Visible = Viewport.Visible
             Groupbox:Resize()
@@ -12421,7 +12460,9 @@ do
 
         function Viewport:Destroy()
             setthreadidentity(8)
+            if Viewport.Destroyed then return end
             Viewport.Destroyed = true
+            Viewport:SetScrollLocked(false)
 
             if Viewport.Connections then
                 for _, Connection in Viewport.Connections do
@@ -13484,465 +13525,524 @@ function Library:SetBackgroundImage(Image: string | number)
     Library:UpdateColorsUsingRegistry()
 end
 
-function Library:UpdateNotificationPositions(Snap: boolean?)
-    setthreadidentity(8)
-    local IsLeft = Library.NotifySide:lower() == "left"
-    local XScale = IsLeft and 0 or 1
-    local RunningY = 0
-
-    for _, FakeBackground in NotifyOrder do
-        local Data = Library.Notifications[FakeBackground]
-        if not (Data and FakeBackground.Parent) then continue end
-
-        local Target = UDim2.new(XScale, 0, 0, RunningY)
-        if Snap or not Data.PositionInitialized then
-            FakeBackground.Position = Target
-            Data.PositionInitialized = true
-
-        elseif FakeBackground.Position ~= Target then
-            TweenService:Create(FakeBackground, Library.NotifyTweenInfo, {
-                Position = Target,
-            }):Play()
-        end
-
-        RunningY = RunningY + FakeBackground.AbsoluteSize.Y / Library.DPIScale + 8
-    end
+function Library:EscapeNotificationText(text: any): string
+    local escaped = string.gsub(tostring(text), "&", "&amp;")
+    escaped = string.gsub(escaped, "<", "&lt;")
+    escaped = string.gsub(escaped, ">", "&gt;")
+    escaped = string.gsub(escaped, '"', "&quot;")
+    return escaped
 end
 
-function Library:SetNotifySide(Side: string)
-    setthreadidentity(8)
-    Library.NotifySide = Side
-
-    local IsLeft = Side:lower() == "left"
-    if IsLeft then
-        NotificationArea.AnchorPoint = Vector2.new(0, 0)
-        NotificationArea.Position = UDim2.fromOffset(6, 6)
-    else
-        NotificationArea.AnchorPoint = Vector2.new(1, 0)
-        NotificationArea.Position = UDim2.new(1, -6, 0, 6)
+function Library:GetNotificationColor(color: any): Color3
+    if typeof(color) == "Color3" then return color end
+    if type(color) == "string" then
+        local schemeColor = GetSchemeValue(color)
+        if typeof(schemeColor) == "Color3" then return schemeColor end
+        local hex = string.match(color, "^#?(%x%x%x%x%x%x)$")
+        if hex then return Color3.fromHex(hex) end
     end
-
-    for FakeBackground in Library.Notifications do
-        if not (FakeBackground and FakeBackground.Parent) then continue end
-        FakeBackground.AnchorPoint = if IsLeft then Vector2.new(0, 0) else Vector2.new(1, 0)
-    end
-
-    if Library.UpdateNotificationPositions then
-        Library:UpdateNotificationPositions(true)
-    end
+    return Library.Scheme.AccentColor
 end
 
-function Library:Notify(...)
-    setthreadidentity(8)
-    local Data = {}
-    local Info = select(1, ...)
-
-    if typeof(Info) == "table" then
-        Data.Title = tostring(Info.Title)
-        Data.TitleColor = Info.TitleColor
-
-        Data.Description = tostring(Info.Description)
-        Data.DescriptionColor = Info.DescriptionColor
-
-        Data.Time = Info.Time or 5
-        Data.SoundId = Info.SoundId
-        Data.Steps = Info.Steps
-        Data.Persist = Info.Persist
-
-        Data.Callback = typeof(Info.Callback) == "function" and Info.Callback or nil
-        Data.Closable = Info.Closable == true
-
-        Data.Icon = Info.Icon
-        Data.BigIcon = Info.BigIcon
-        Data.IconColor = Info.IconColor
-
-        Data.Volume = tonumber(Info.Volume) or 3
-    else
-        Data.Description = tostring(Info)
-        Data.Time = select(2, ...) or 5
-        Data.SoundId = select(3, ...)
-        Data.Volume = select(4, ...) or 3
+function Library:ResolveNotificationSegmentIcon(segment: any): string?
+    local reference = segment
+    local explicit = false
+    if type(segment) == "table" then
+        reference = segment.Icon or segment.Image or segment.AssetId or segment.Text
+        explicit = segment.Icon ~= nil or segment.Image ~= nil or segment.AssetId ~= nil
     end
-    Data.Destroyed = false
+    if type(reference) == "number" and (type(segment) ~= "table" or explicit) then
+        if reference > 0 and reference < math.huge and reference % 1 == 0 then return string.format("rbxassetid://%.0f", reference) end
+    elseif type(reference) == "string" then
+        if string.match(reference, "^rbxassetid://%d+$") then return reference end
+        if explicit and string.match(reference, "^%d+$") then return "rbxassetid://" .. reference end
+    end
+    return nil
+end
 
-    local DeletedInstance = false
-    local DeleteConnection = nil
-    if typeof(Data.Time) == "Instance" then
-        DeleteConnection = Data.Time.Destroying:Connect(function()
-            setthreadidentity(8)
-            DeletedInstance = true
+function Library:MeasureNotificationInlineText(text: string, font: Font, textSize: number, bold: boolean, cache: { [string]: any }): (number, number)
+    local key = (if bold then "bold:" else "normal:") .. text
+    local cached = cache[key]
+    if cached then return cached.X, cached.Y end
+    local escaped = Library:EscapeNotificationText(text)
+    local width, height = Library:GetTextBounds(if bold then "<b>" .. escaped .. "</b>" else escaped, font, textSize, 1e6)
+    if width == 0 and text ~= "" and string.match(text, "^%s+$") then
+        local padded = Library:GetTextBounds(if bold then "<b>|" .. escaped .. "|</b>" else "|" .. escaped .. "|", font, textSize, 1e6)
+        local padding = Library:GetTextBounds(if bold then "<b>||</b>" else "||", font, textSize, 1e6)
+        width = math.max(0, padded - padding)
+    end
+    cache[key] = Vector2.new(width, height)
+    return width, height
+end
 
-            DeleteConnection:Disconnect()
-            DeleteConnection = nil
-        end)
+function Library:LayoutNotificationSegments(segments: { any }, font: Font, textSize: number, available: number, cache: { [string]: any }, defaultColor: any): ({ any }, number, number)
+    local _, fontHeight = Library:MeasureNotificationInlineText("Ag", font, textSize, false, cache)
+    local layout = { Runs = {}, Lines = {}, Current = { Width = 0, Height = math.max(textSize, fontHeight) } }
+    table.insert(layout.Lines, layout.Current)
+
+    function layout:NextLine(): ()
+        self.Current = { Width = 0, Height = math.max(textSize, fontHeight) }
+        table.insert(self.Lines, self.Current)
     end
 
-    local FakeBackground = New("Frame", {
-        AnchorPoint = Library.NotifySide:lower() == "left" and Vector2.new(0, 0) or Vector2.new(1, 0),
-        AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
-        Size = UDim2.fromOffset(0, 0),
-        Visible = false,
-        Parent = NotificationArea,
-    })
-
-    local Holder = New("Frame", {
-        AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundColor3 = "MainColor",
-        Position = Library.NotifySide:lower() == "left" and UDim2.new(-1, -8, 0, 0) or UDim2.new(1, 8, 0, 0),
-        Size = UDim2.new(1, 0, 0, 0),
-        ZIndex = 5,
-        Parent = FakeBackground,
-    })
-    table.insert(
-        Library.Corners,
-        New("UICorner", {
-            CornerRadius = UDim.new(0, Library.CornerRadius),
-            Parent = Holder,
-        })
-    )
-    Library:AddOutline(Holder)
-
-    local ContentHolder = New("Frame", {
-        AutomaticSize = Enum.AutomaticSize.Y,
-        BackgroundTransparency = 1,
-        Size = UDim2.new(1, 0, 0, 0),
-        Parent = Holder,
-    })
-    New("UIListLayout", {
-        Padding = UDim.new(0, 4),
-        Parent = ContentHolder,
-    })
-    New("UIPadding", {
-        PaddingBottom = UDim.new(0, 8),
-        PaddingLeft = UDim.new(0, 8),
-        PaddingRight = UDim.new(0, 8),
-        PaddingTop = UDim.new(0, 8),
-        Parent = ContentHolder,
-    })
-
-    local CloseButton
-    if Data.Closable then
-        CloseButton = New("ImageButton", {
-            AnchorPoint = Vector2.new(1, 0),
-            BackgroundTransparency = 1,
-            Image = CloseIcon and CloseIcon.Url or "",
-            ImageColor3 = "FontColor",
-            ImageRectOffset = CloseIcon and CloseIcon.ImageRectOffset or Vector2.zero,
-            ImageRectSize = CloseIcon and CloseIcon.ImageRectSize or Vector2.zero,
-            ImageTransparency = 0.5,
-            Position = UDim2.new(1, -8, 0, 8),
-            Size = UDim2.fromOffset(14, 14),
-            ZIndex = 6,
-            Parent = Holder,
-        })
-
-        CloseButton.MouseEnter:Connect(function()
-            setthreadidentity(8)
-            TweenService:Create(CloseButton, Library.TweenInfo, {
-                ImageTransparency = 0,
-            }):Play()
-        end)
-        CloseButton.MouseLeave:Connect(function()
-            setthreadidentity(8)
-            TweenService:Create(CloseButton, Library.TweenInfo, {
-                ImageTransparency = 0.5,
-            }):Play()
-        end)
-        CloseButton.MouseButton1Click:Connect(function()
-            setthreadidentity(8)
-            Data:Destroy("user")
-        end)
-    end
-
-    local ContentContainer = New("Frame", {
-        BackgroundTransparency = 1,
-        AutomaticSize = Enum.AutomaticSize.XY,
-        Size = UDim2.fromOffset(0, 0),
-        Parent = ContentHolder,
-    })
-
-    if Data.BigIcon then
-        New("UIListLayout", {
-            Padding = UDim.new(0, 8),
-            FillDirection = Enum.FillDirection.Horizontal,
-            VerticalAlignment = Enum.VerticalAlignment.Center,
-            Parent = ContentContainer,
-        })
-    end
-
-    local BigIconLabel
-    if Data.BigIcon then
-        local ParsedIcon = Library:GetCustomIcon(Data.BigIcon)
-        if ParsedIcon then
-            BigIconLabel = New("ImageLabel", {
-                BackgroundTransparency = 1,
-                Size = UDim2.fromOffset(24, 24),
-                ImageColor3 = Data.IconColor or "AccentColor",
-                Parent = ContentContainer,
-            })
-            Library:ApplyLucideIcon(BigIconLabel, ParsedIcon)
+    function layout:Place(run: any, width: number, height: number): ()
+        local line = self.Current
+        if line.Width > 0 and line.Width + width > available then self:NextLine(); line = self.Current end
+        run.X, run.Line, run.Width, run.Height = line.Width, line, math.min(width, available), height
+        local previous = self.Runs[#self.Runs]
+        if run.Text and previous and previous.Text and previous.Line == line and previous.Color == run.Color and previous.Bold == run.Bold then
+            previous.Text ..= run.Text
+            previous.Width += run.Width
+        else
+            table.insert(self.Runs, run)
         end
+        line.Width += run.Width
+        line.Height = math.max(line.Height, height)
     end
 
-    local TextContainer = New("Frame", {
-        BackgroundTransparency = 1,
-        AutomaticSize = Enum.AutomaticSize.XY,
-        Size = UDim2.fromOffset(0, 0),
-        Parent = ContentContainer,
-    })
-    New("UIListLayout", {
-        Padding = UDim.new(0, 4),
-        Parent = TextContainer,
-    })
-
-    local TitleContainer
-    if Data.Title then
-        TitleContainer = New("Frame", {
-            BackgroundTransparency = 1,
-            Size = UDim2.fromOffset(0, 0),
-            Parent = TextContainer,
-        })
-    end
-
-    local IconLabel
-    if Data.Icon and TitleContainer then
-        local ParsedIcon = Library:GetCustomIcon(Data.Icon)
-        if ParsedIcon then
-            IconLabel = New("ImageLabel", {
-                BackgroundTransparency = 1,
-                AnchorPoint = Vector2.new(0, 0.5),
-                Position = UDim2.new(0, 0, 0.5, 1),
-                Size = UDim2.fromOffset(15, 15),
-                ImageColor3 = Data.IconColor or "FontColor",
-                Parent = TitleContainer,
-            })
-            Library:ApplyLucideIcon(IconLabel, ParsedIcon)
-        end
-    end
-
-    local Title
-    local Desc
-    local TitleX = 0
-    local DescX = 0
-
-    local TimerFill
-
-    if Data.Title then
-        Title = New("TextLabel", {
-            AutomaticSize = Enum.AutomaticSize.None,
-            BackgroundTransparency = 1,
-            AnchorPoint = Vector2.new(0, 0.5),
-            Position = UDim2.new(0, (IconLabel and 21 or 0), 0.5, 0),
-            Size = UDim2.fromScale(0, 0),
-            Text = Data.Title,
-            TextColor3 = Data.TitleColor or "FontColor",
-            TextSize = 15,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            TextYAlignment = Enum.TextYAlignment.Center,
-            TextWrapped = true,
-            Parent = TitleContainer,
-        })
-    end
-
-    if Data.Description then
-        Desc = New("TextLabel", {
-            AutomaticSize = Enum.AutomaticSize.None,
-            BackgroundTransparency = 1,
-            Size = UDim2.fromScale(0, 0),
-            Text = Data.Description,
-            TextColor3 = Data.DescriptionColor or "FontColor",
-            TextSize = 14,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            TextWrapped = true,
-            Parent = TextContainer,
-        })
-    end
-
-    function Data:Resize()
-        setthreadidentity(8)
-        local ExtraWidth = BigIconLabel and 32 or 0
-        local IconWidth = IconLabel and 21 or 0
-        local CloseWidth = Data.Closable and 20 or 0
-        local MaxTextWidth = math.max(
-            40,
-            (NotificationArea.AbsoluteSize.X / Library.DPIScale) - 24 - ExtraWidth - CloseWidth
-        )
-
-        if Title then
-            local X, Y = Library:GetTextBounds(Title.Text, Title.FontFace, Title.TextSize, MaxTextWidth - IconWidth)
-            Title.Size = UDim2.fromOffset(X, Y)
-            TitleX = X + IconWidth
-            TitleContainer.Size = UDim2.fromOffset(TitleX, math.max(Y, IconLabel and 16 or 0))
-        end
-
-        if Desc then
-            local X, Y = Library:GetTextBounds(Desc.Text, Desc.FontFace, Desc.TextSize, MaxTextWidth)
-            Desc.Size = UDim2.fromOffset(X, Y)
-            DescX = X
-        end
-
-        FakeBackground.Size = UDim2.fromOffset(math.max(TitleX, DescX) + 24 + ExtraWidth + CloseWidth, 0)
-
-        if Library.Notifications[FakeBackground] then
-            task.defer(function()
-                setthreadidentity(8)
-                if Data.Destroyed or not FakeBackground.Parent then
-                    return
-                end
-
-                Library:UpdateNotificationPositions(true)
-            end)
-        end
-    end
-
-    function Data:ChangeTitle(Text)
-        setthreadidentity(8)
-        if Title then
-            Data.Title = tostring(Text)
-            Title.Text = Data.Title
-            Data:Resize()
-        end
-    end
-
-    function Data:ChangeDescription(Text)
-        setthreadidentity(8)
-        if Desc then
-            Data.Description = tostring(Text)
-            Desc.Text = Data.Description
-            Data:Resize()
-        end
-    end
-
-    function Data:ChangeStep(NewStep)
-        setthreadidentity(8)
-        if TimerFill and Data.Steps then
-            NewStep = math.clamp(NewStep or 0, 0, Data.Steps)
-            TimerFill.Size = UDim2.fromScale(NewStep / Data.Steps, 1)
-        end
-    end
-
-    function Data:Destroy(Reason)
-        setthreadidentity(8)
-        if Data.Destroyed then
+    function layout:PlaceText(text: string, color: any, bold: boolean): ()
+        local width, height = Library:MeasureNotificationInlineText(text, font, textSize, bold, cache)
+        if width <= available then
+            self:Place({ Text = text, Color = color, Bold = bold }, width, height)
             return
         end
-
-        Reason = Reason or "script"
-        Data.Destroyed = true
-
-        if Data.Callback then
-            pcall(Data.Callback, Reason)
+        for first, last in utf8.graphemes(text) do
+            local character = string.sub(text, first, last)
+            local characterWidth, characterHeight = Library:MeasureNotificationInlineText(character, font, textSize, bold, cache)
+            self:Place({ Text = character, Color = color, Bold = bold }, characterWidth, characterHeight)
         end
+    end
 
-        if typeof(Data.Time) == "Instance" then
-            pcall(Data.Time.Destroy, Data.Time)
-        end
-
-        if DeleteConnection then
-            DeleteConnection:Disconnect()
-        end
-
-        if FakeBackground then
-            local Idx = table.find(NotifyOrder, FakeBackground)
-            if Idx then
-                table.remove(NotifyOrder, Idx)
+    for _, segment in segments do
+        local properties = if type(segment) == "table" then segment else {}
+        local image = Library:ResolveNotificationSegmentIcon(segment)
+        if image then
+            local margin = math.min(2, math.max(0, (available - 1) / 2))
+            local size = math.min(math.clamp(tonumber(properties.Size) or textSize + 1, 8, 64), available - margin * 2)
+            layout:Place({ Image = image, Color = properties.Color, Margin = margin, ImageSize = size }, size + margin * 2, size)
+        else
+            local text = tostring(if type(segment) == "table" then properties.Text or "" else segment)
+            text = string.gsub(string.gsub(text, "\r\n", "\n"), "\r", "\n")
+            local color, bold = properties.Color or defaultColor, properties.Bold == true
+            for word, whitespace in string.gmatch(text, "(%S*)(%s*)") do
+                if word ~= "" then layout:PlaceText(word, color, bold) end
+                for index = 1, #whitespace do
+                    local character = string.sub(whitespace, index, index)
+                    if character == "\n" then
+                        layout:NextLine()
+                    elseif layout.Current.Width > 0 then
+                        local spacing = if character == "\t" then "    " else " "
+                        local width, height = Library:MeasureNotificationInlineText(spacing, font, textSize, bold, cache)
+                        if layout.Current.Width + width <= available then layout:Place({ Text = spacing, Color = color, Bold = bold }, width, height) end
+                    end
+                end
             end
         end
+    end
+    local width, height = 0, 0
+    for _, line in layout.Lines do
+        line.Y = height
+        width = math.max(width, line.Width)
+        height += line.Height + 1
+    end
+    for _, run in layout.Runs do run.Y = run.Line.Y + (run.Line.Height - run.Height) / 2 end
+    return layout.Runs, width, math.max(0, height - 1)
+end
 
-        Library:UpdateNotificationPositions()
+function Library:FormatNotificationSegments(segments: { any }): string
+    assert(type(segments) == "table", "Notification segments must be a table")
+    local formatted = table.create(#segments)
+    for _, segment in segments do
+        if Library:ResolveNotificationSegmentIcon(segment) then continue end
+        local text = Library:EscapeNotificationText(if type(segment) == "table" then segment.Text or "" else segment)
+        if type(segment) == "table" then
+            if segment.Bold then text = "<b>" .. text .. "</b>" end
+            if segment.Color then
+                text = string.format('<font color="#%s">%s</font>', Library:GetNotificationColor(segment.Color):ToHex(), text)
+            end
+        end
+        table.insert(formatted, text)
+    end
+    return table.concat(formatted)
+end
 
-        TweenService
-            :Create(Holder, Library.NotifyTweenInfo, {
-                Position = Library.NotifySide:lower() == "left" and UDim2.new(-1, -8, 0, -2) or UDim2.new(1, 8, 0, -2),
-            })
-            :Play()
+function Library:UpdateNotificationPositions(_snap: boolean?): ()
+    setthreadidentity(8)
+    local horizontal = if string.lower(Library.NotifySide) == "left" then 0 else 1
+    local vertical = 0
+    for _, frame in NotifyOrder do
+        local notification = Library.Notifications[frame]
+        if not notification or notification.Destroyed or not notification.Ready or not frame.Parent then continue end
+        local position = UDim2.new(horizontal, 0, 0, vertical)
+        if _snap or not notification.PositionInitialized then
+            notification:CancelTween("Position")
+            frame.Position = position
+            notification.PositionInitialized = true
+        elseif frame.Position ~= position then
+            notification:Tween("Position", frame, Library.NotifyTweenInfo, { Position = position })
+        end
+        vertical += frame.Size.Y.Offset + (if notification.Style == "Compact" then 5 else 8)
+    end
+end
 
-        task.delay(Library.NotifyTweenInfo.Time, function()
+function Library:SetNotifySide(side: string): ()
+    setthreadidentity(8)
+    assert(type(side) == "string" and (string.lower(side) == "left" or string.lower(side) == "right"), "NotifySide must be Left or Right")
+    Library.NotifySide = side
+    local isLeft = string.lower(side) == "left"
+    NotificationArea.AnchorPoint = Vector2.new(if isLeft then 0 else 1, 0)
+    NotificationArea.Position = if isLeft then UDim2.fromOffset(6, 6) else UDim2.new(1, -6, 0, 6)
+    for frame in Library.Notifications do
+        if frame.Parent then frame.AnchorPoint = NotificationArea.AnchorPoint end
+    end
+    Library:UpdateNotificationPositions(true)
+end
+
+function Library:Notify(...: any): any
+    setthreadidentity(8)
+    if Library.Unloaded then return nil end
+    local first = select(1, ...)
+    local info = if type(first) == "table" then first else { Description = first, Time = select(2, ...), SoundId = select(3, ...), Volume = select(4, ...) }
+    local requestedStyle = info.Style or (if info.Title ~= nil or info.BigIcon then "Classic" else Library.NotifyStyle or "Compact")
+    local compact = string.lower(tostring(requestedStyle)) == "compact"
+    local data = {
+        Style = if compact then "Compact" else "Classic",
+        Title = if info.Title ~= nil then tostring(info.Title) else nil,
+        Description = tostring(info.Description or info.Text or ""),
+        TitleColor = info.TitleColor, DescriptionColor = info.DescriptionColor,
+        Time = if info.Time ~= nil then info.Time else 5,
+        Persist = info.Persist == true, RichText = info.RichText ~= false or info.Segments ~= nil,
+        Steps = if type(info.Steps) == "number" and info.Steps > 0 then info.Steps else nil,
+        Callback = if type(info.Callback) == "function" then info.Callback else nil,
+        Closable = info.Closable == true, Icon = info.Icon, BigIcon = info.BigIcon, IconColor = info.IconColor,
+        SoundId = info.SoundId, Volume = tonumber(info.Volume) or 3,
+        Destroyed = false, Disposed = false, Ready = false, LayoutRevision = 0,
+        Tasks = {}, Tweens = {}, Connections = {}, InlineElements = {}, InlineMeasurements = {},
+    }
+    local frame = New("Frame", {
+        AnchorPoint = Vector2.new(if string.lower(Library.NotifySide) == "left" then 0 else 1, 0),
+        BackgroundTransparency = 1, Size = UDim2.fromOffset(0, 0), Visible = false, Parent = NotificationArea,
+    })
+    local holder = New("CanvasGroup", {
+        BackgroundColor3 = "MainColor", BackgroundTransparency = if compact then 0.08 else 0,
+        BorderSizePixel = 0, GroupTransparency = 1, Size = UDim2.fromScale(1, 1),
+        ZIndex = 201, Parent = frame,
+    })
+    local corner = New("UICorner", { CornerRadius = UDim.new(0, if compact then 14 else Library.CornerRadius), Parent = holder })
+    local outline, shadow = Library:AddOutline(holder)
+    if compact then outline.Transparency = 0.3; shadow.Transparency = 0.75 end
+    local description = New("TextLabel", {
+        BackgroundTransparency = 1, Text = "", TextColor3 = info.DescriptionColor or "FontColor",
+        TextSize = if compact then 13 else 14, TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center, Parent = holder,
+    })
+    description.RichText = data.RichText
+    local title
+    if data.Title and not compact then
+        title = New("TextLabel", {
+            BackgroundTransparency = 1, Text = data.Title, TextColor3 = info.TitleColor or "FontColor", TextSize = 15,
+            TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Center, Parent = holder,
+        })
+        title.RichText = data.RichText
+    end
+    local icon, iconSize
+    local parsedIcon = if info.BigIcon or info.Icon then Library:GetCustomIcon(info.BigIcon or info.Icon) else nil
+    if parsedIcon then
+        iconSize = if compact then 14 elseif info.BigIcon then 24 else 16
+        icon = New("ImageLabel", {
+            BackgroundTransparency = 1, Size = UDim2.fromOffset(iconSize, iconSize),
+            ImageColor3 = info.IconColor or (if info.BigIcon then "AccentColor" else "FontColor"), Parent = holder,
+        })
+        Library:ApplyLucideIcon(icon, parsedIcon)
+    end
+    local close
+    if data.Closable then
+        close = New("ImageButton", {
+            Name = "Close", BackgroundTransparency = 1, Image = CloseIcon and CloseIcon.Url or "",
+            ImageColor3 = "FontColor", ImageRectOffset = CloseIcon and CloseIcon.ImageRectOffset or Vector2.zero,
+            ImageRectSize = CloseIcon and CloseIcon.ImageRectSize or Vector2.zero, ImageTransparency = 0.5,
+            Size = UDim2.fromOffset(14, 14), Parent = holder,
+        })
+    end
+    local showTimer = data.Steps ~= nil or (if info.ShowTimer ~= nil then info.ShowTimer == true else not compact and not data.Persist and typeof(data.Time) ~= "Instance")
+    local timer = New("Frame", {
+        BackgroundColor3 = "BackgroundColor", BorderSizePixel = 0, Size = UDim2.new(1, -24, 0, 2),
+        Visible = showTimer, Parent = holder,
+    })
+    local fill = New("Frame", {
+        BackgroundColor3 = "AccentColor", BorderSizePixel = 0,
+        Size = UDim2.fromScale(if data.Steps or typeof(data.Time) == "Instance" then 0 else 1, 1), Parent = timer,
+    })
+    data.Frame, data.Holder, data.Label, data.TimerFill = frame, holder, description, fill
+
+    function data:CancelTween(key: string): ()
+        local tween = self.Tweens[key]
+        if not tween then return end
+        self.Tweens[key] = nil
+        tween:Cancel()
+        tween:Destroy()
+    end
+
+    function data:Tween(key: string, object: Instance, tweenInfo: TweenInfo, properties: { [string]: any }): ()
+        self:CancelTween(key)
+        local tween = TweenService:Create(object, tweenInfo, properties)
+        self.Tweens[key] = tween
+        tween:Play()
+    end
+
+    function data:Connect(signal: RBXScriptSignal, callback: (...any) -> ()): ()
+        table.insert(self.Connections, signal:Connect(function(...: any): ()
             setthreadidentity(8)
-            Library.Notifications[FakeBackground] = nil
-            FakeBackground:Destroy()
+            callback(...)
+        end))
+    end
+
+    function data:CancelTask(key: string): ()
+        local thread = self.Tasks[key]
+        self.Tasks[key] = nil
+        if thread and thread ~= coroutine.running() and coroutine.status(thread) ~= "dead" then task.cancel(thread) end
+    end
+
+    function data:GetText(): string
+        local text = if self.Segments then Library:FormatNotificationSegments(self.Segments) else self.Description
+        if compact and self.Title then
+            if not self.RichText then return self.Title .. "  " .. text end
+            local heading = "<b>" .. Library:EscapeNotificationText(self.Title) .. "</b>"
+            if self.TitleColor then heading = string.format('<font color="#%s">%s</font>', Library:GetNotificationColor(self.TitleColor):ToHex(), heading) end
+            return heading .. "  " .. text
+        end
+        return text
+    end
+
+    function data:RenderInline(runs: { any }?): ()
+        if runs and not self.InlineHolder then
+            self.InlineHolder = New("Frame", { Name = "InlineContent", BackgroundTransparency = 1, ClipsDescendants = true, Parent = holder })
+        end
+        if self.InlineHolder then
+            self.InlineHolder.Visible = runs ~= nil
+            self.InlineHolder.Position, self.InlineHolder.Size = description.Position, description.Size
+        end
+        for index = #self.InlineElements, 1, -1 do
+            local view = self.InlineElements[index]
+            local run = runs and runs[index]
+            if not run or view.ClassName ~= (if run.Image then "ImageLabel" else "TextLabel") then
+                Library:RemoveFromRegistry(view)
+                view:Destroy()
+                self.InlineElements[index] = nil
+            end
+        end
+        if not runs then return end
+        for index, run in runs do
+            local view = self.InlineElements[index]
+            if not view then
+                view = New(if run.Image then "ImageLabel" else "TextLabel", {
+                    Name = "InlineSegment" .. index, BackgroundTransparency = 1, BorderSizePixel = 0, Parent = self.InlineHolder,
+                })
+                self.InlineElements[index] = view
+            end
+            view.Position = UDim2.fromOffset(run.X + (run.Margin or 0), run.Y)
+            view.Size = UDim2.fromOffset(run.ImageSize or run.Width, run.Height)
+            local color = run.Color
+            local registry = Library.Registry[view] or {}
+            Library.Registry[view] = registry
+            if run.Image then
+                view.Image, view.ScaleType = run.Image, Enum.ScaleType.Fit
+                registry.ImageColor3 = function(): Color3 return if color then Library:GetNotificationColor(color) else Color3.new(1, 1, 1) end
+                view.ImageColor3 = registry.ImageColor3()
+            else
+                local text = Library:EscapeNotificationText(run.Text)
+                view.RichText, view.TextWrapped = true, false
+                view.Text = if run.Bold then "<b>" .. text .. "</b>" else text
+                view.FontFace, view.TextSize = description.FontFace, description.TextSize
+                view.TextXAlignment, view.TextYAlignment = Enum.TextXAlignment.Left, Enum.TextYAlignment.Center
+                registry.TextColor3 = function(): Color3 return Library:GetNotificationColor(color) end
+                view.TextColor3 = registry.TextColor3()
+            end
+        end
+    end
+
+    function data:Resize(): ()
+        setthreadidentity(8)
+        if self.Destroyed then return end
+        self.LayoutRevision += 1
+        local revision = self.LayoutRevision
+        local padding, vertical = if compact then 12 else 10, if compact then 6 else 8
+        local iconWidth, closeWidth = if icon then iconSize + 8 else 0, if close then 22 else 0
+        local maximum = math.max(1, math.min(tonumber(info.MaxWidth) or (if compact then Library.NotifyMaxWidth or 860 else 300), (ScreenGui.AbsoluteSize.X - 12) / Library.DPIScale))
+        local available = math.max(1, maximum - padding * 2 - iconWidth - closeWidth)
+        local text = self:GetText()
+        local runs, width, height
+        local hasImages = false
+        for _, segment in self.Segments or {} do
+            if Library:ResolveNotificationSegmentIcon(segment) then hasImages = true; break end
+        end
+        if hasImages then
+            if self.InlineFont ~= description.FontFace then self.InlineFont, self.InlineMeasurements = description.FontFace, {} end
+            local segments = self.Segments
+            if compact and self.Title then
+                segments = { { Text = self.Title .. "  ", Color = self.TitleColor or info.DescriptionColor or "FontColor", Bold = true } }
+                for _, segment in self.Segments do table.insert(segments, segment) end
+            end
+            runs, width, height = Library:LayoutNotificationSegments(segments, description.FontFace, description.TextSize, available, self.InlineMeasurements, info.DescriptionColor or "FontColor")
+        else
+            width, height = Library:GetTextBounds(if self.RichText then text else Library:EscapeNotificationText(text), description.FontFace, description.TextSize, available)
+        end
+        local titleWidth, titleHeight = 0, 0
+        if title then
+            titleWidth, titleHeight = Library:GetTextBounds(if self.RichText then self.Title else Library:EscapeNotificationText(self.Title), title.FontFace, title.TextSize, available)
+        end
+        -- Text measurement can yield while a notification is closed or resized again.
+        if self.Destroyed or revision ~= self.LayoutRevision then return end
+        width, height, titleWidth, titleHeight = math.ceil(width), math.ceil(height), math.ceil(titleWidth), math.ceil(titleHeight)
+        local textWidth = math.min(available, math.max(1, width, titleWidth))
+        local contentHeight = math.max(height + (if title then titleHeight + 4 else 0), iconSize or 0)
+        local totalHeight = math.max(if compact then 28 else 32, contentHeight + vertical * 2 + (if showTimer then 5 else 0))
+        local totalWidth = math.min(maximum, math.max(28, textWidth + padding * 2 + iconWidth + closeWidth))
+        description.Text = text
+        description.Visible = runs == nil
+        description.Size = UDim2.fromOffset(textWidth, height)
+        description.Position = UDim2.fromOffset(padding + iconWidth, vertical + (if title then titleHeight + 4 else math.max(0, (contentHeight - height) / 2)))
+        self:RenderInline(runs)
+        if title then
+            title.Text = self.Title
+            title.Position = UDim2.fromOffset(padding + iconWidth, vertical)
+            title.Size = UDim2.fromOffset(textWidth, titleHeight)
+        end
+        if icon then icon.Position = UDim2.fromOffset(padding, vertical + (contentHeight - iconSize) / 2) end
+        if close then close.Position = UDim2.fromOffset(totalWidth - padding - 14, vertical + math.max(0, (contentHeight - 14) / 2)) end
+        timer.Position = UDim2.fromOffset(padding, totalHeight - (if compact then 3 else 6))
+        timer.Size = UDim2.fromOffset(math.max(1, totalWidth - padding * 2), 2)
+        corner.CornerRadius = UDim.new(0, if compact then math.min(totalHeight / 2, 16) else Library.CornerRadius)
+        frame.Size = UDim2.fromOffset(totalWidth, totalHeight)
+        if self.Ready then Library:UpdateNotificationPositions() end
+    end
+
+    function data:ChangeTitle(text: any): ()
+        setthreadidentity(8)
+        if self.Destroyed then return end
+        self.Title = tostring(text)
+        self:Resize()
+    end
+
+    function data:ChangeDescription(text: any): ()
+        setthreadidentity(8)
+        if self.Destroyed then return end
+        self.Segments = nil
+        self.InlineMeasurements = {}
+        if type(text) == "table" then
+            self.Segments = table.create(#text)
+            for _, segment in text do table.insert(self.Segments, if type(segment) == "table" then table.clone(segment) else segment) end
+            self.RichText, description.RichText = true, true
+        else
+            self.Description = tostring(text)
+        end
+        self:Resize()
+    end
+
+    function data:ChangeStep(_step: number?): ()
+        setthreadidentity(8)
+        if not self.Destroyed and self.Steps then fill.Size = UDim2.fromScale(math.clamp(_step or 0, 0, self.Steps) / self.Steps, 1) end
+    end
+
+    function data:Dispose(): ()
+        setthreadidentity(8)
+        if self.Disposed then return end
+        self.Disposed = true
+        for key in self.Tasks do self:CancelTask(key) end
+        for key in self.Tweens do self:CancelTween(key) end
+        for _, connection in self.Connections do connection:Disconnect() end
+        table.clear(self.Connections)
+        Library.Notifications[frame] = nil
+        for _, descendant in frame:GetDescendants() do Library:RemoveFromRegistry(descendant) end
+        Library:RemoveFromRegistry(frame)
+        frame:Destroy()
+    end
+
+    function data:Destroy(_reason: string?, _immediate: boolean?): ()
+        setthreadidentity(8)
+        if self.Destroyed then
+            if _immediate then self:Dispose() end
+            return
+        end
+        self.Destroyed = true
+        for key in self.Tasks do self:CancelTask(key) end
+        for key in self.Tweens do self:CancelTween(key) end
+        for _, connection in self.Connections do connection:Disconnect() end
+        table.clear(self.Connections)
+        local index = table.find(NotifyOrder, frame)
+        if index then table.remove(NotifyOrder, index) end
+        if typeof(self.Time) == "Instance" then pcall(self.Time.Destroy, self.Time) end
+        Library:UpdateNotificationPositions()
+        if _immediate or Library.Unloaded or not self.Ready then
+            self:Dispose()
+        else
+            self:Tween("Exit", holder, Library.NotifyTweenInfo, {
+                GroupTransparency = 1, Position = UDim2.fromOffset(if string.lower(Library.NotifySide) == "left" then -14 else 14, -3),
+            })
+            self.Tasks.Dispose = task.delay(Library.NotifyTweenInfo.Time, function(): () self:Dispose() end)
+        end
+        if self.Callback then
+            local success, message = pcall(self.Callback, _reason or "script")
+            if not success then warn("[Obsidian notification] " .. tostring(message)) end
+        end
+    end
+
+    Library.Registry[description] = Library.Registry[description] or {}
+    Library.Registry[description].Text = function(): string return data:GetText() end
+    data:Connect(description:GetPropertyChangedSignal("FontFace"), function(): () data:Resize() end)
+    if title then data:Connect(title:GetPropertyChangedSignal("FontFace"), function(): () data:Resize() end) end
+    if close then
+        data:Connect(close.MouseEnter, function(): () data:Tween("Close", close, Library.TweenInfo, { ImageTransparency = 0 }) end)
+        data:Connect(close.MouseLeave, function(): () data:Tween("Close", close, Library.TweenInfo, { ImageTransparency = 0.5 }) end)
+        data:Connect(close.Activated, function(): () data:Destroy("user") end)
+    end
+    if typeof(data.Time) == "Instance" then
+        data:Connect(data.Time.Destroying, function(): ()
+            data.TimeEnded = true
+            if data.Ready and not data.Persist then data:Destroy("timer") end
         end)
     end
-
-    local TimerHolder = New("Frame", {
-        BackgroundTransparency = 1,
-        Size = UDim2.new(1, 0, 0, 7),
-        Visible = (Data.Persist ~= true and typeof(Data.Time) ~= "Instance") or typeof(Data.Steps) == "number",
-        Parent = ContentHolder,
-    })
-    local TimerBar = New("Frame", {
-        BackgroundColor3 = "BackgroundColor",
-        BorderColor3 = "OutlineColor",
-        BorderSizePixel = 1,
-        Position = UDim2.fromOffset(0, 3),
-        Size = UDim2.new(1, 0, 0, 2),
-        Parent = TimerHolder,
-    })
-    TimerFill = New("Frame", {
-        BackgroundColor3 = "AccentColor",
-        Size = UDim2.fromScale(1, 1),
-        Parent = TimerBar,
-    })
-
-    if typeof(Data.Time) == "Instance" then
-        TimerFill.Size = UDim2.fromScale(0, 1)
-    end
-    if Data.SoundId then
-        local SoundId = Data.SoundId
-        if typeof(SoundId) == "number" then
-            SoundId = string.format("rbxassetid://%d", SoundId)
+    Library.Notifications[frame] = data
+    table.insert(NotifyOrder, frame)
+    if compact then
+        local count = 0
+        for _, candidate in NotifyOrder do if Library.Notifications[candidate].Style == "Compact" then count += 1 end end
+        local limit = math.max(1, math.floor(tonumber(Library.NotifyLimit) or 8))
+        for _, candidate in table.clone(NotifyOrder) do
+            if count <= limit then break end
+            local notification = Library.Notifications[candidate]
+            if notification and notification.Style == "Compact" then notification:Destroy("limit"); count -= 1 end
         end
-
+    end
+    if info.Segments then data:ChangeDescription(info.Segments) else data:Resize() end
+    if data.Destroyed then return data end
+    if Library.Unloaded then data:Destroy("unload", true); return data end
+    if data.TimeEnded and not data.Persist then data:Destroy("timer", true); return data end
+    data.Ready, frame.Visible = true, true
+    holder.Position = UDim2.fromOffset(if string.lower(Library.NotifySide) == "left" then -14 else 14, 3)
+    data:Tween("Enter", holder, Library.NotifyTweenInfo, { Position = UDim2.fromOffset(0, 0), GroupTransparency = 0 })
+    Library:UpdateNotificationPositions()
+    if not data.Persist and typeof(data.Time) ~= "Instance" then
+        data.Tasks.Enter = task.delay(Library.NotifyTweenInfo.Time, function(): ()
+            setthreadidentity(8)
+            data.Tasks.Enter = nil
+            if data.Destroyed then return end
+            local duration = math.max(0, tonumber(data.Time) or 5)
+            if showTimer and not data.Steps then
+                data:Tween("Timer", fill, TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut), { Size = UDim2.fromScale(0, 1) })
+            end
+            data.Tasks.Expiry = task.delay(duration, function(): () data:Destroy("timer") end)
+        end)
+    end
+    if data.SoundId then
         New("Sound", {
-            SoundId = SoundId,
-            Volume = tonumber(Data.Volume) or 3,
-            PlayOnRemove = true,
-            Parent = SoundService,
+            SoundId = if typeof(data.SoundId) == "number" then string.format("rbxassetid://%d", data.SoundId) else data.SoundId,
+            Volume = data.Volume, PlayOnRemove = true, Parent = SoundService,
         }):Destroy()
     end
-
-    Data.Holder = Holder
-
-    table.insert(NotifyOrder, FakeBackground)
-    Library.Notifications[FakeBackground] = Data
-
-    Data:Resize()
-
-    FakeBackground.Visible = true
-    TweenService:Create(Holder, Library.NotifyTweenInfo, {
-        Position = UDim2.fromOffset(0, 0),
-    }):Play()
-
-    task.defer(function()
-        setthreadidentity(8)
-        if not Data.Destroyed then
-            Library:UpdateNotificationPositions(true)
-        end
-    end)
-
-    task.delay(Library.NotifyTweenInfo.Time, function()
-        setthreadidentity(8)
-        if Data.Persist then
-            return
-        elseif typeof(Data.Time) == "Instance" then
-            repeat
-                task.wait()
-            until DeletedInstance or Data.Destroyed
-        else
-            TweenService
-                :Create(TimerFill, TweenInfo.new(Data.Time, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut), {
-                    Size = UDim2.fromScale(0, 1),
-                })
-                :Play()
-            task.wait(Data.Time)
-        end
-
-        Data:Destroy("timer")
-    end)
-
-    return Data
+    return data
 end
+
 
 function Library:CreateWindow(WindowInfo)
     setthreadidentity(8)
@@ -13986,6 +14086,8 @@ function Library:CreateWindow(WindowInfo)
     WindowInfo.SnapMargin = math.max(0, WindowInfo.SnapMargin)
 
     Library.CornerRadius = WindowInfo.CornerRadius
+    Library.NotifyStyle = WindowInfo.NotifyStyle
+    Library.NotifyLimit = WindowInfo.NotifyLimit
     Library:SetNotifySide(WindowInfo.NotifySide)
     Library.ShowCustomCursor = WindowInfo.ShowCustomCursor
     Library.Scheme.Font = WindowInfo.Font
@@ -19536,6 +19638,8 @@ Library:GiveSignal(Teams.ChildRemoved:Connect(OnTeamChange))
 function Library:Unload()
     setthreadidentity(8)
     Library.Unloaded = true
+    for _, notification in table.clone(Library.Notifications) do notification:Destroy("unload", true) end
+    table.clear(NotifyOrder)
 
     --// Disconnect connections
     for Index = #Library.Signals, 1, -1 do
