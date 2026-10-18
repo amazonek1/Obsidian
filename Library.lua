@@ -13618,7 +13618,7 @@ function Library:LayoutNotificationSegments(segments: { any }, font: Font, textS
         local image = Library:ResolveNotificationSegmentIcon(segment)
         if image then
             local margin = math.min(2, math.max(0, (available - 1) / 2))
-            local size = math.min(math.clamp(tonumber(properties.Size) or (textSize + 1) * 1.5, 8, 64), available - margin * 2)
+            local size = math.min(math.clamp(tonumber(properties.Size) or (textSize + 1) * 2, 8, 64), available - margin * 2)
             layout:Place({ Image = image, Color = properties.Color, Margin = margin, ImageSize = size }, size + margin * 2, size)
         else
             local text = tostring(if type(segment) == "table" then properties.Text or "" else segment)
