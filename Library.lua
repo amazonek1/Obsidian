@@ -1,12 +1,12 @@
 --!strict
 
 export type ESPContext = {
-    Player: Player, Character: Model, Humanoid: Humanoid, RootPart: BasePart,
+    Player: Player?, Character: Model, Humanoid: Humanoid?, RootPart: BasePart?, Pivot: CFrame,
     Camera: Camera, Distance: number, Team: string, DeltaTime: number, Data: { [string]: any },
 }
 export type ESPItemResult = boolean | string | number | {
     Visible: boolean?, Text: string?, Value: number?, Max: number?,
-    Color: Color3?, Transparency: number?, Segments: { { number } }?,
+    Color: Color3?, Transparency: number?, Segments: { { number } }?, Image: string?,
 }
 
 local cloneref = (cloneref or clonereference or function(instance: any)
@@ -45,12 +45,14 @@ local Toggles = {}
 local Options = {}
 local Tooltips = {}
 
+local BootstrapOptions = ...
+local AssetDirectory = if type(BootstrapOptions) == "table" and type(BootstrapOptions.AssetDirectory) == "string" then BootstrapOptions.AssetDirectory else "Obsidian"
 local BaseURL = "https://raw.githubusercontent.com/deividcomsono/Obsidian/refs/heads/main/"
 local CustomImageManager = {}
 local CustomImageManagerAssets = {
     TransparencyTexture = {
         RobloxId = 139785960036434,
-        Path = "Obsidian/assets/TransparencyTexture.png",
+        Path = AssetDirectory .. "/assets/TransparencyTexture.png",
         URL = BaseURL .. "assets/TransparencyTexture.png",
 
         Id = nil,
@@ -58,7 +60,7 @@ local CustomImageManagerAssets = {
 
     SaturationMap = {
         RobloxId = 4155801252,
-        Path = "Obsidian/assets/SaturationMap.png",
+        Path = AssetDirectory .. "/assets/SaturationMap.png",
         URL = BaseURL .. "assets/SaturationMap.png",
 
         Id = nil,
@@ -66,7 +68,7 @@ local CustomImageManagerAssets = {
 
     LoadingIcon = {
         RobloxId = 97544096941083,
-        Path = "Obsidian/assets/LoadingIcon.png",
+        Path = AssetDirectory .. "/assets/LoadingIcon.png",
         URL = BaseURL .. "assets/LoadingIcon.png",
 
         Id = nil,
@@ -74,7 +76,7 @@ local CustomImageManagerAssets = {
 
     CheckIcon = {
         RobloxId = 97682394690683,
-        Path = "Obsidian/assets/CheckIcon.png",
+        Path = AssetDirectory .. "/assets/CheckIcon.png",
         URL = BaseURL .. "assets/CheckIcon.png",
 
         Id = nil,
@@ -120,7 +122,7 @@ do
 
         CustomImageManagerAssets[AssetName] = {
             RobloxId = RobloxAssetId,
-            Path = string.format("Obsidian/custom_assets/%s", AssetName),
+            Path = string.format("%s/custom_assets/%s", AssetDirectory, AssetName),
             URL = URL,
 
             Id = nil,
@@ -182,6 +184,7 @@ do
 end
 
 local Library = {
+    ESPPreviewVersion = 5,
     LocalPlayer = LocalPlayer,
     IsRobloxFocused = true,
 
@@ -2400,27 +2403,46 @@ function Library:IsInsideFrame(ParentFrame: GuiObject, Frame: GuiObject)
         and GuiPos.Y + GuiSize.Y <= FramePos.Y + FrameSize.Y
 end
 
-function Library:SafeCallback(Func: (...any) -> ...any, ...: any)
-    setthreadidentity(8)
+-- UI Identity Utilities
+function Library:WithUIIdentity(callback: (...any) -> ...any, ...: any): ...any
+    local getIdentity = getthreadidentity or getidentity
+    local setIdentity = setthreadidentity or setidentity
+    if type(getIdentity) ~= "function" or type(setIdentity) ~= "function" then
+        return callback(...)
+    end
+
+    local previous = getIdentity()
+    setIdentity(8)
+    local result = table.pack(pcall(callback, ...))
+    setIdentity(previous)
+    if not result[1] then
+        error(result[2], 0)
+    end
+    return table.unpack(result, 2, result.n)
+end
+
+function Library:SafeCallback(Func: (...any) -> ...any, ...: any): ...any
     if not (Func and typeof(Func) == "function") then
         return
     end
 
-    local Result = table.pack(xpcall(Func, function(Error)
-        setthreadidentity(8)
-        task.defer(error, debug.traceback(Error, 2))
-        if Library.NotifyOnError and Library.Notify then
-            Library:Notify(Error)
+    return self:WithUIIdentity(function(...: any): ...any
+        local result = table.pack(xpcall(Func, function(message: any): any
+            local setIdentity = setthreadidentity or setidentity
+            if type(setIdentity) == "function" then
+                setIdentity(8)
+            end
+            task.defer(error, debug.traceback(tostring(message), 2))
+            if Library.NotifyOnError and Library.Notify then
+                Library:Notify(message)
+            end
+            return message
+        end, ...))
+        if not result[1] then
+            return nil
         end
-
-        return Error
-    end, ...))
-
-    if not Result[1] then
-        return nil
-    end
-
-    return table.unpack(Result, 2, Result.n)
+        return table.unpack(result, 2, result.n)
+    end, ...)
 end
 
 function GetOverlappingDraggable(UI: GuiObject, TargetPos: Vector2?)
@@ -10354,7 +10376,8 @@ do
         local Groupbox = self
         local Height = math.max(300, Info.Height or 500)
         local Sides = { "Left", "Top", "Right", "Bottom" }
-        local Teams = { "Enemies", "Allies", "Local" }
+        local Teams = Info.Profiles or { "Enemies", "Allies", "Local" }
+        assert(#Teams > 0 and #Teams <= 4, "ESP preview supports one to four profiles")
         local BoxTypes = { "None", "2D Box", "3D Box", "Bounding Box" }
         local Profiles, ProfileControls = {}, {}
         local Defaults
@@ -10362,7 +10385,7 @@ do
         local Preview = {
             Type = "ESPPreview", Destroyed = false, Visible = Info.Visible ~= false, Height = Height,
             Connections = {}, Items = {}, ItemOrder = {}, Value = {},
-            Callback = Info.Callback, Changed = nil, Team = "Enemies", Revision = 0,
+            Callback = Info.Callback, Changed = nil, Team = Teams[1], Revision = 0,
             Bindings = {}, Trackers = {}, DataProvider = nil,
             ProfileSettings = table.clone(Info.Settings or { Enabled = true }), ApplyingProfile = false,
             AnimationTime = 0,
@@ -10407,9 +10430,8 @@ do
         ChamsWorld.Parent = ChamsViewport
 
         local function Connect(signal: RBXScriptSignal, callback: (...any) -> ()): RBXScriptConnection
-            local connection = signal:Connect(function(...: any)
-                setthreadidentity(8)
-                callback(...)
+            local connection = signal:Connect(function(...: any): ...any
+                return Library:WithUIIdentity(callback, ...)
             end)
             table.insert(Preview.Connections, connection)
             return connection
@@ -10426,7 +10448,7 @@ do
 
         local TeamButtons = {}
         for index, team in Teams do
-            local button = Button(Toolbar, team, UDim2.new((index - 1) * 0.25, 0, 0, 0), UDim2.new(0.25, -4, 1, 0))
+            local button = Button(Toolbar, team, UDim2.new((index - 1) * 0.75 / #Teams, 0, 0, 0), UDim2.new(0.75 / #Teams, -4, 1, 0))
             button.TextScaled = true
             New("UITextSizeConstraint", { MinTextSize = 8, MaxTextSize = 12, Parent = button })
             button.TextColor3 = if team == Preview.Team then Accent else Library.Scheme.FontColor
@@ -10521,6 +10543,44 @@ do
             ModelSize, ModelCenter, BasePivot = size, bounds.Position, Model:GetPivot()
         end
 
+        local ModelTextures = {}
+
+        function Preview:UpdateChamsTexture(color: Color3): ()
+            for part, textures in ModelTextures do
+                if part.Parent then continue end
+                for _, texture in textures do texture:Destroy() end
+                ModelTextures[part] = nil
+            end
+            local settings = self.ProfileSettings
+            local asset = if settings.Chams and Info.ChamsTextureAssets then Info.ChamsTextureAssets[settings.Texture or "None"] else nil
+            local scale = math.max(0.25, settings.TextureScale or 4)
+            local offset = self.AnimationTime * (settings.TextureSpeed or 0.5) % scale
+            for _, part in ModelParts do
+                local textures = ModelTextures[part]
+                if not asset or asset == "" then
+                    if textures then
+                        for _, texture in textures do texture:Destroy() end
+                        ModelTextures[part] = nil
+                    end
+                    continue
+                end
+                if not textures then
+                    textures = {}
+                    ModelTextures[part] = textures
+                    for _, face in Enum.NormalId:GetEnumItems() do
+                        local texture = Instance.new("Texture")
+                        texture.Name, texture.Face, texture.Parent = "ZWareChamsTexture", face, part
+                        table.insert(textures, texture)
+                    end
+                end
+                for _, texture in textures do
+                    texture.Texture, texture.Color3, texture.Transparency = asset, color, 0.15
+                    texture.StudsPerTileU, texture.StudsPerTileV = scale, scale
+                    texture.OffsetStudsU, texture.OffsetStudsV = offset, offset * 0.5
+                end
+            end
+        end
+
         function Preview:ResolveChamsAppearance(): any
             local settings = self.ProfileSettings
             local material = if self.ModelStyle == "Neon" then Enum.Material.Neon else Enum.Material.SmoothPlastic
@@ -10550,6 +10610,7 @@ do
                 if part.Material ~= appearance.Material then part.Material = appearance.Material end
                 if part.Transparency ~= appearance.Transparency then part.Transparency = appearance.Transparency end
             end
+            self:UpdateChamsTexture(appearance.Color)
             ChamsViewport.Visible = appearance.Enabled and appearance.FillTransparency < 1
             if not ChamsViewport.Visible then return end
             if not ChamsModel then
@@ -10621,9 +10682,79 @@ do
             Library:SafeCallback(Preview.Changed, config, itemId, Preview)
         end
 
+        local IconMasks = {}
+        local IconMaskCount = 0
+
+        function Preview:GetIconMask(uri: string): any
+            local entry = IconMasks[uri]
+            if entry then return entry.Content end
+            if IconMaskCount >= 32 then return nil end
+            entry = {}
+            IconMasks[uri] = entry
+            IconMaskCount += 1
+            task.spawn(function(): ()
+                local editable
+                local success, message = pcall(function(): ()
+                    local identifier = string.match(uri, "^rbxassetid://(%d+)$")
+                    local source = if identifier then `rbxthumb://type=Asset&id={identifier}&w=150&h=150` else uri
+                    editable = game:GetService("AssetService"):CreateEditableImageAsync(Content.fromUri(source))
+                    assert(editable, "Editable image memory budget exhausted")
+                    local pixels = editable:ReadPixelsBuffer(Vector2.zero, editable.Size)
+                    for offset = 0, buffer.len(pixels) - 1, 4 do
+                        buffer.writeu8(pixels, offset, 255)
+                        buffer.writeu8(pixels, offset + 1, 255)
+                        buffer.writeu8(pixels, offset + 2, 255)
+                    end
+                    editable:WritePixelsBuffer(Vector2.zero, editable.Size, pixels)
+                    if Preview.Destroyed then editable:Destroy(); editable = nil; return end
+                    entry.Image, entry.Content = editable, Content.fromObject(editable)
+                end)
+                if not success then
+                    if editable then editable:Destroy() end
+                    warn(`[Obsidian Weapon Icon] Solid color unavailable for {uri}: {message}`)
+                end
+            end)
+            return entry.Content
+        end
+
+        local function CreateImageDrawing(): any
+            local frame = Instance.new("ImageLabel")
+            frame.BackgroundTransparency = 1
+            frame.BorderSizePixel = 0
+            frame.ImageColor3 = Color3.new(1, 1, 1)
+            frame.Visible = false
+            frame.ScaleType = Enum.ScaleType.Fit
+            local properties = { Position = Vector2.zero, Size = Vector2.zero, Color = Color3.new(1, 1, 1), Transparency = 1, Uri = "", Visible = false, ZIndex = 4 }
+            local drawing = { _frame = frame, __OBJECT_EXISTS = true }
+
+            function drawing:Remove(): ()
+                if not self.__OBJECT_EXISTS then return end
+                self.__OBJECT_EXISTS = false
+                frame:Destroy()
+            end
+
+            return setmetatable(drawing, {
+                __index = function(_self: any, key: string): any return properties[key] end,
+                __newindex = function(_self: any, key: string, value: any): ()
+                    if properties[key] == value then return end
+                    properties[key] = value
+                    if key == "Position" then frame.Position = UDim2.fromOffset(value.X, value.Y)
+                    elseif key == "Size" then frame.Size = UDim2.fromOffset(value.X, value.Y)
+                    elseif key == "Color" then frame.ImageColor3 = value
+                    elseif key == "Transparency" then frame.ImageTransparency = 1 - value
+                    elseif key == "Uri" then
+                        if not properties.Content then frame.Image = value end
+                    elseif key == "Content" then
+                        if value then frame.ImageContent = value else frame.Image = properties.Uri end
+                    elseif key == "Visible" then frame.Visible = value
+                    elseif key == "ZIndex" then frame.ZIndex = value end
+                end,
+            })
+        end
+
         local function CreateDrawing(item: any, key: string, className: string, _context: any?): any
             if item.Drawings[key] then return item.Drawings[key] end
-            local object = DrawingProvider.new(className)
+            local object = if className == "Image" then CreateImageDrawing() else DrawingProvider.new(className)
             object.Visible = false
             local frame = if type(object) == "table" then rawget(object, "_frame") else nil
             if typeof(frame) == "Instance" and frame:IsA("GuiObject") then
@@ -10636,23 +10767,32 @@ do
 
         local function Draw(item: any, key: string, className: string, properties: { [string]: any }, _context: any?): any
             local object = CreateDrawing(item, key, className, _context)
+            if _context and _context.Drawn then _context.Drawn[object] = _context.Generation end
+            if className == "Text" then
+                local settings = if _context then _context.Settings else Preview.ProfileSettings
+                properties.Font = DrawingProvider.Fonts[settings and settings.Font or "System"] or 2
+            end
             -- Z-WareDrawing insets filled squares by their outline thickness too.
             if className == "Square" and properties.Filled == true and item.UsesGui then properties.Thickness = 0 end
             local scale = if item.UsesGui and not _context then Scale() else 1
             local origin = if _context then Vector2.zero elseif item.UsesGui then Stage.AbsolutePosition else -select(1, GuiService:GetGuiInset())
             for property, value in properties do
                 if property == "Position" or property == "From" or property == "To" then
-                    object[property] = (value - origin) / scale
+                    local transformed = (value - origin) / scale
+                    if object[property] ~= transformed then object[property] = transformed end
                 elseif property == "Size" and typeof(value) == "Vector2" then
-                    object.Size = value / scale
+                    local transformed = value / scale
+                    if object.Size ~= transformed then object.Size = transformed end
                 elseif property == "Size" or property == "Thickness" then
-                    object[property] = value / scale
+                    local transformed = value / scale
+                    if object[property] ~= transformed then object[property] = transformed end
                 else
-                    object[property] = value
+                    if object[property] ~= value then object[property] = value end
                 end
             end
-            object.Transparency = 1 - (item.ResolvedTransparency or item.Transparency)
-            object.Visible = true
+            local transparency = 1 - (item.ResolvedTransparency or item.Transparency)
+            if object.Transparency ~= transparency then object.Transparency = transparency end
+            if not object.Visible then object.Visible = true end
             return object
         end
 
@@ -10677,9 +10817,10 @@ do
             local item = {
                 Id = itemId, Label = definition.Label or itemId, Group = definition.Group or "Flags", DataKey = definition.DataKey,
                 Kind = definition.Kind or "Text", Text = definition.Text or definition.Label or itemId,
-                TemplateText = definition.Text or definition.Label or itemId,
+                TemplateText = definition.Text or definition.Label or itemId, Image = definition.Image or (if itemId == "WeaponIcon" then "rbxassetid://14882620172" else nil),
                 Enabled = definition.Enabled == true, Side = definition.Side or "Right",
                 Order = definition.Order or (#self.ItemOrder + 1), Color = definition.Color or Color3.fromRGB(224, 226, 232),
+                OriginalColors = if definition.OriginalColors == nil then itemId == "WeaponIcon" else definition.OriginalColors == true,
                 Transparency = definition.Transparency or 0, Size = definition.Size or 12,
                 Outline = definition.Outline ~= false, Background = definition.Background == true,
                 BackgroundColor = definition.BackgroundColor or Color3.fromRGB(20, 22, 29),
@@ -10729,7 +10870,7 @@ do
                 local item = self.Items[itemId]
                 config.Items[itemId] = {
                     Enabled = item.Enabled, Side = item.Side, Order = item.Order, Color = item.Color:ToHex(),
-                    Transparency = item.Transparency, Size = item.Size, Outline = item.Outline,
+                    Transparency = item.Transparency, Size = item.Size, Outline = item.Outline, OriginalColors = item.OriginalColors,
                     Background = item.Background, BackgroundColor = item.BackgroundColor:ToHex(),
                     Thickness = item.Thickness, Format = item.Format, BoxType = item.BoxType, Text = item.Text,
                 }
@@ -10739,7 +10880,7 @@ do
 
         function Preview:NormalizeProfile(config: { [string]: any }, team: string): { [string]: any }
             local result = self:CloneConfig(Defaults)
-            if team ~= "Enemies" then result.Settings.Enabled = false end
+            if team ~= Teams[1] then result.Settings.Enabled = false end
             for key, value in config do
                 if key == "Settings" then
                     for setting, selection in value do result.Settings[setting] = self:CloneConfig(selection) end
@@ -10756,7 +10897,7 @@ do
         end
 
         function Preview:GetProfile(team: string): { [string]: any }
-            assert(table.find(Teams, team), "Expected Enemies, Allies or Local")
+            assert(table.find(Teams, team), "Unknown ESP profile")
             if team == self.Team then return self:GetConfig() end
             return self:NormalizeProfile(Profiles[team] or {}, team)
         end
@@ -10821,7 +10962,7 @@ do
                 elseif property == "Size" then item.Size = math.clamp(value, 8, 24)
                 elseif property == "Thickness" then item.Thickness = math.clamp(value, 1, 8)
                 elseif property == "Order" then item.Order = math.max(1, value)
-                elseif property == "Enabled" or property == "Outline" or property == "Background" then
+                elseif property == "Enabled" or property == "Outline" or property == "Background" or property == "OriginalColors" then
                     assert(type(value) == "boolean", "ESP switches must be booleans")
                     item[property] = value
                 elseif property == "Text" then item.Text = tostring(value)
@@ -10842,7 +10983,7 @@ do
             assert(type(config) == "table", "Expected an ESP configuration")
             if type(config.Profiles) == "table" then
                 for _, team in Teams do Profiles[team] = self:NormalizeProfile(config.Profiles[team] or {}, team) end
-                self.Team = if table.find(Teams, config.Team) then config.Team else "Enemies"
+                self.Team = if table.find(Teams, config.Team) then config.Team else Teams[1]
                 self:SetValue(Profiles[self.Team])
                 return
             end
@@ -10900,15 +11041,25 @@ do
             Notify(nil)
         end
 
-        function Preview:SetObject(object: Model): ()
-            assert(typeof(object) == "Instance" and object:IsA("Model"), "Expected an R6 model")
-            assert(object:FindFirstChild("Torso") and object:FindFirstChild("Head"), "Expected R6 Torso and Head")
-            assert(object.Archivable, "Preview model must be Archivable")
-            local replacement = object:Clone()
+        function Preview:SetObject(object: Model?): ()
+            assert(not self.Destroyed, "Cannot replace a destroyed ESP preview model")
+            if not object then
+                self.ObjectAvailable, ViewportFrame.Visible, ChamsViewport.Visible = false, false, false
+                return
+            end
+            assert(typeof(object) == "Instance" and object:IsA("Model"), "Expected a model")
+            assert(object:FindFirstChildWhichIsA("BasePart", true), "Expected model geometry")
+            local archivable = object.Archivable
+            object.Archivable = true
+            local cloned, replacement = pcall(object.Clone, object)
+            object.Archivable = archivable
+            assert(cloned and replacement, `Could not clone ESP preview model: {tostring(replacement)}`)
+            replacement:PivotTo(CFrame.new())
             Model:Destroy()
             Model = replacement
             Model.Parent = World
             ReadModel()
+            self.ObjectAvailable, ViewportFrame.Visible = true, true
             ApplyModel()
             self.Object = Model
         end
@@ -11031,6 +11182,7 @@ do
             OutlineButton.Text = `Shadow / outline                   {if Selected.Outline then "ON" else "OFF"}`
             SideButton.Text = `Position                                  {Selected.Side} ›`
             FormatButton.Text = if Selected.Kind == "Box" then `Box Type                              {Selected.BoxType} ›`
+                elseif Selected.Kind == "Icon" then `Icon Colors                            {if Selected.OriginalColors then "Original" else "Custom"} ›`
                 else `Format                                   {Selected.Format} ›`
             local box = Selected.Kind == "Box"
             SampleText.Visible = not box
@@ -11094,6 +11246,8 @@ do
             if not Selected then return end
             if Selected.Kind == "Box" then
                 Preview:SetItem(Selected.Id, { BoxType = BoxTypes[(table.find(BoxTypes, Selected.BoxType) or #BoxTypes) % #BoxTypes + 1] })
+            elseif Selected.Kind == "Icon" then
+                Preview:SetItem(Selected.Id, { OriginalColors = not Selected.OriginalColors })
             else
                 Preview:SetItem(Selected.Id, { Format = if Selected.Format == "Absolute" then "Percent" else "Absolute" })
             end
@@ -11181,7 +11335,7 @@ do
             ItemsMenu:Toggle()
         end)
         function Preview:SetTeam(team: string): ()
-            assert(table.find(Teams, team), "Expected Enemies, Allies or Local")
+            assert(table.find(Teams, team), "Unknown ESP profile")
             if team == self.Team then return end
             Profiles[self.Team] = self:GetConfig()
             local config = self:GetProfile(team)
@@ -11271,18 +11425,72 @@ do
 
         local function Measure(item: any, _context: any?): (number, number)
             local scale = Scale(_context)
-            if item.Kind == "Icon" then return item.Size * 4 * scale, (item.Size + 4) * scale end
+            if item.Kind == "Icon" then
+                if item.ResolvedImage or item.Image then return item.Size * 3 * scale, item.Size * 3 * scale end
+                return item.Size * 4 * scale, (item.Size + 4) * scale
+            end
             local object = CreateDrawing(item, "Text", "Text", _context)
-            object.Text = TextFor(item, _context)
-            object.Font = 2
-            object.Size = item.Size * (if item.UsesGui and not _context then 1 else scale)
+            local text = TextFor(item, _context)
+            local settings = if _context then _context.Settings else Preview.ProfileSettings
+            local font = DrawingProvider.Fonts[settings and settings.Font or "System"] or 2
+            local size = item.Size * (if item.UsesGui and not _context then 1 else scale)
+            if item.MeasureText == text and item.MeasureFont == font and item.MeasureSize == size and item.MeasureScale == scale then
+                return item.MeasureWidth, item.MeasureHeight
+            end
+            if object.Text ~= text then object.Text = text end
+            if object.Font ~= font then object.Font = font end
+            if object.Size ~= size then object.Size = size end
             local bounds = object.TextBounds
-            return math.max(12, bounds.X * (if item.UsesGui and not _context then scale else 1)) + 8 * scale, (item.Size + 5) * scale
+            local width, height = math.max(12, bounds.X * (if item.UsesGui and not _context then scale else 1)) + 8 * scale, (item.Size + 5) * scale
+            item.MeasureText, item.MeasureFont, item.MeasureSize, item.MeasureScale = text, font, size, scale
+            item.MeasureWidth, item.MeasureHeight = width, height
+            return width, height
         end
 
-        local function Layout(rect: any, _context: any?): ()
+        local function Layout(rect: any, _context: any?): any
             local scale = Scale(_context)
             local items = if _context then _context.Items else Preview.Items
+            local layoutRect = rect
+            local selectedBox
+
+            for _, itemId in Preview.ItemOrder do
+                local item = items[itemId]
+
+                if not item.Enabled or item.Kind ~= "Box" or item.BoxType == "None" then
+                    continue
+                end
+
+                local boxRect = table.clone(rect)
+                item.BoxCorners = nil
+
+                if item.BoxType == "2D Box" then
+                    boxRect.Width = rect.Height * 0.55
+                    boxRect.X = rect.X + (rect.Width - boxRect.Width) / 2
+                elseif item.BoxType == "3D Box" then
+                    local corners = Preview:GetBoxCorners(_context)
+                    item.BoxCorners = corners
+
+                    if corners then
+                        local minimum = Vector2.new(math.huge, math.huge)
+                        local maximum = Vector2.new(-math.huge, -math.huge)
+
+                        for _, point in corners do
+                            minimum, maximum = minimum:Min(point), maximum:Max(point)
+                        end
+
+                        boxRect = { X = minimum.X, Y = minimum.Y, Width = maximum.X - minimum.X, Height = maximum.Y - minimum.Y }
+                    end
+                end
+
+                item.LayoutRect = boxRect
+
+                if not selectedBox or itemId == "Box" then
+                    selectedBox, layoutRect = item, boxRect
+                end
+            end
+
+            rect = layoutRect
+
             for _, side in Sides do
                 local bars, labels = {}, {}
                 for _, itemId in Preview.ItemOrder do
@@ -11290,11 +11498,7 @@ do
                     if item.Hover then item.Hover.Visible = false end
                     if not item.Enabled or item.Side ~= side then continue end
                     if item.Kind == "Box" or item.Kind == "Skeleton" or item.Kind == "Hitboxes" then
-                        item.Rect = table.clone(rect)
-                        if item.Kind == "Box" and item.BoxType == "2D Box" then
-                            item.Rect.Width = rect.Height * 0.55
-                            item.Rect.X = rect.X + (rect.Width - item.Rect.Width) / 2
-                        end
+                        item.Rect = table.clone(if item.Kind == "Box" and item.BoxType ~= "None" then item.LayoutRect else rect)
                     elseif item.Kind == "Bar" then table.insert(bars, item)
                     else table.insert(labels, item) end
                 end
@@ -11338,6 +11542,8 @@ do
                     cursor += if vertical then rowHeight else height
                 end
             end
+
+            return rect
         end
 
         local function Square(item: any, key: string, rect: any, color: Color3, filled: boolean, _thickness: number?, _context: any?): ()
@@ -11352,19 +11558,31 @@ do
             Draw(item, key, "Line", { From = first, To = second, Color = color, Thickness = (_thickness or item.Thickness) * Scale(_context), ZIndex = 3 }, _context)
         end
 
+        function Preview:RenderTracer(items: any, rect: any, settings: any, _context: any?): ()
+            if not settings.Tracers then return end
+            local item = items.Tracer
+            if not item then item = { Drawings = {}, Transparency = 0 }; items.Tracer = item end
+            local size = if _context then _context.ViewportSize else Stage.AbsoluteSize
+            local origin = if _context then Vector2.zero else Stage.AbsolutePosition
+            local anchor = settings.TracerOrigin or "Bottom"
+            local start = Vector2.new(size.X / 2, if anchor == "Top" then 0 elseif anchor == "Center" then size.Y / 2 else size.Y)
+            Draw(item, "Line", "Line", {
+                From = origin + start, To = Vector2.new(rect.X + rect.Width / 2, rect.Y + rect.Height),
+                Color = Color3.fromHex(settings.TracerColor or "FFFFFF"), Thickness = settings.TracerThickness or 1, ZIndex = 2,
+            }, _context)
+        end
+
         function Preview:GetBoxCorners(_context: any?): { Vector2 }?
             local parts = if _context then _context.Parts else ModelParts
-            local frame = if _context then _context.RootPart.CFrame else Model:GetPivot()
+            local frame = if _context then _context.Pivot else Model:GetPivot()
             local minimum, maximum = Vector3.new(math.huge, math.huge, math.huge), Vector3.new(-math.huge, -math.huge, -math.huge)
             for _, part in parts do
-                for horizontal = -1, 1, 2 do
-                    for vertical = -1, 1, 2 do
-                        for depth = -1, 1, 2 do
-                            local point = frame:PointToObjectSpace(part.CFrame:PointToWorldSpace(part.Size * Vector3.new(horizontal, vertical, depth) / 2))
-                            minimum, maximum = minimum:Min(point), maximum:Max(point)
-                        end
-                    end
-                end
+                local relative = frame:ToObjectSpace(part.CFrame)
+                local x, y, z, xx, xy, xz, yx, yy, yz, zx, zy, zz = relative:GetComponents()
+                local half = part.Size / 2
+                local extent = Vector3.new(math.abs(xx) * half.X + math.abs(xy) * half.Y + math.abs(xz) * half.Z, math.abs(yx) * half.X + math.abs(yy) * half.Y + math.abs(yz) * half.Z, math.abs(zx) * half.X + math.abs(zy) * half.Y + math.abs(zz) * half.Z)
+                local center = Vector3.new(x, y, z)
+                minimum, maximum = minimum:Min(center - extent), maximum:Max(center + extent)
             end
             if minimum.X == math.huge then return nil end
             local camera = if _context then _context.Camera else Camera
@@ -11374,7 +11592,7 @@ do
                 Vector3.new(0, 0, 1), Vector3.new(1, 0, 1), Vector3.new(1, 1, 1), Vector3.new(0, 1, 1),
             } do
                 local point = frame:PointToWorldSpace(minimum + (maximum - minimum) * offset)
-                if camera.CFrame:PointToObjectSpace(point).Z >= -0.05 then return nil end
+                if camera.CFrame:PointToObjectSpace(point).Z >= -0.1 then return nil end
                 table.insert(corners, Project(point, _context))
             end
             return corners
@@ -11386,7 +11604,7 @@ do
             if boxType == "None" then return end
             local color, scale = item.ResolvedColor or item.Color, Scale(_context)
             if boxType == "3D Box" then
-                local corners = self:GetBoxCorners(_context)
+                local corners = item.BoxCorners
                 if not corners then return end
                 for index, edge in {
                     { 1, 2 }, { 2, 3 }, { 3, 4 }, { 4, 1 }, { 5, 6 }, { 6, 7 }, { 7, 8 }, { 8, 5 },
@@ -11396,10 +11614,6 @@ do
                     Line(item, `BoxEdge{index}`, corners[edge[1]], corners[edge[2]], color, _context)
                 end
                 return
-            end
-            if boxType == "2D Box" then
-                local width = rect.Height * 0.55
-                rect = { X = rect.X + (rect.Width - width) / 2, Y = rect.Y, Width = width, Height = rect.Height }
             end
             item.BoxRect = rect
             if item.Outline then Square(item, "Outline", rect, Color3.new(), false, (item.Thickness + 2) * scale, _context) end
@@ -11461,6 +11675,14 @@ do
             elseif item.Kind == "Box" then
                 Preview:RenderBox(item, _context)
             elseif item.Kind == "Icon" then
+                local image = if _context then item.ResolvedImage else item.Image
+
+                if image then
+                    local drawing = Draw(item, "Image", "Image", { Uri = image, Position = position, Size = Vector2.new(rect.Width, rect.Height), Color = if item.OriginalColors then Color3.new(1, 1, 1) else color, ZIndex = 4 }, _context)
+                    drawing.Content = if item.OriginalColors then nil else Preview:GetIconMask(image)
+                    return
+                end
+
                 local points = item.ResolvedSegments or (if item.Id == "WeaponIcon" then {
                     { 0.05, 0.4, 0.18, 0.4 }, { 0.18, 0.4, 0.24, 0.25 }, { 0.24, 0.25, 0.66, 0.25 },
                     { 0.4, 0.25, 0.43, 0.05 }, { 0.66, 0.25, 0.7, 0.4 }, { 0.7, 0.4, 0.96, 0.4 },
@@ -11559,14 +11781,14 @@ do
             local function AttachCharacter(target: any, character: Model?): ()
                 DisconnectAll(target.CharacterConnections)
                 HideTarget(target)
-                target.Character, target.Parts, target.RemovingCharacter = character, nil, nil
+                target.Character, target.Parts, target.RemovingCharacter, target.HasRendered = character, nil, nil, false
                 if not character then return end
-                for _, signal in { character.ChildAdded, character.ChildRemoved } do
+                for _, signal in { character.DescendantAdded, character.DescendantRemoving } do
                     table.insert(target.CharacterConnections, signal:Connect(function(): () target.Parts = nil end))
                 end
             end
 
-            local function RemovePlayer(player: Player): ()
+            local function RemovePlayer(player: Instance): ()
                 local target = tracker.Targets[player]
                 if not target then return end
                 target.Removed = true
@@ -11618,9 +11840,13 @@ do
             local function DefaultValue(item: any, context: any): any
                 local supplied = context.Data[item.Id]
                 if supplied ~= nil then return supplied end
-                if item.Id == "Name" then return context.Player.DisplayName or context.Player.Name end
+                if item.Id == "Name" then return if context.Player then context.Player.DisplayName or context.Player.Name else context.Character.Name end
                 if item.Id == "Distance" then return `{math.floor(context.Distance)} m` end
-                if item.Id == "Health" then return { Value = context.Humanoid.Health, Max = context.Humanoid.MaxHealth } end
+                if item.Id == "Health" then
+                    if context.Humanoid then return { Value = context.Humanoid.Health, Max = context.Humanoid.MaxHealth } end
+                    local health, maximum = context.Character:GetAttribute("Health"), context.Character:GetAttribute("MaxHealth")
+                    return if type(health) == "number" and type(maximum) == "number" and maximum > 0 then { Value = health, Max = maximum } else nil
+                end
                 if item.Kind == "Box" or item.Kind == "Skeleton" or item.Kind == "Hitboxes" then return true end
                 if item.Id == "WeaponText" or item.Id == "WeaponIcon" then
                     local tool = context.Character:FindFirstChildOfClass("Tool")
@@ -11637,7 +11863,7 @@ do
                 else value = DefaultValue(item, context) end
                 item.Enabled = false
                 item.ResolvedText, item.ResolvedValue, item.ResolvedMaximum = nil, nil, nil
-                item.ResolvedColor, item.ResolvedTransparency, item.ResolvedSegments = nil, nil, nil
+                item.ResolvedColor, item.ResolvedTransparency, item.ResolvedSegments, item.ResolvedImage = nil, nil, nil, nil
                 if not success or value == nil or value == false then return end
                 if type(value) == "table" then
                     if value.Visible == false then return end
@@ -11649,6 +11875,10 @@ do
                     end
                     if typeof(value.Color) == "Color3" then item.ResolvedColor = value.Color end
                     if IsFinite(value.Transparency) then item.ResolvedTransparency = math.clamp(value.Transparency, 0, 1) end
+                    if value.Image ~= nil then
+                        if type(value.Image) ~= "string" or value.Image == "" then ProviderError(item.Id, "Icon Image must be a nonempty content URI"); return end
+                        item.ResolvedImage = value.Image
+                    end
                     if value.Segments ~= nil then
                         if type(value.Segments) ~= "table" or #value.Segments > 64 then ProviderError(item.Id, "Expected up to 64 icon segments"); return end
                         for _, segment in value.Segments do
@@ -11669,9 +11899,20 @@ do
                 item.Enabled = true
             end
 
+            local ProfileCache = {}
+            local ProfileRevision = -1
+
             local function SyncItems(target: any, team: string): ()
                 if target.Revision == Preview.Revision and target.Team == team then return end
-                local config = Preview:GetProfile(team)
+                if ProfileRevision ~= Preview.Revision then
+                    table.clear(ProfileCache)
+                    ProfileRevision = Preview.Revision
+                end
+                local config = ProfileCache[team]
+                if not config then
+                    config = Preview:GetProfile(team)
+                    ProfileCache[team] = config
+                end
                 for _, itemId in Preview.ItemOrder do
                     local definition = Preview.Items[itemId]
                     local settings = config.Items[itemId] or Defaults.Items[itemId] or Preview:GetConfig().Items[itemId]
@@ -11680,6 +11921,7 @@ do
                         item = { Id = itemId, Kind = definition.Kind, Drawings = {}, Text = definition.Text }
                         target.Items[itemId] = item
                     end
+                    item.Image = definition.Image
                     for key, value in settings do
                         item[key] = if key == "Color" or key == "BackgroundColor" then Color3.fromHex(value) else value
                     end
@@ -11690,72 +11932,97 @@ do
             end
 
             local function WorldBounds(target: any, camera: Camera): any
-                local minimum, maximum = Vector2.new(math.huge, math.huge), Vector2.new(-math.huge, -math.huge)
+                local minimumX, minimumY, maximumX, maximumY = math.huge, math.huge, -math.huge, -math.huge
                 for _, part in target.Parts do
-                    for horizontal = -1, 1, 2 do
-                        for vertical = -1, 1, 2 do
-                            for depth = -1, 1, 2 do
-                                local world = part.CFrame:PointToWorldSpace(part.Size * Vector3.new(horizontal, vertical, depth) / 2)
-                                local projected = camera:WorldToViewportPoint(world)
-                                if projected.Z <= 0.1 then return nil end
-                                minimum = Vector2.new(math.min(minimum.X, projected.X), math.min(minimum.Y, projected.Y))
-                                maximum = Vector2.new(math.max(maximum.X, projected.X), math.max(maximum.Y, projected.Y))
+                    local frame, half = part.CFrame, part.Size / 2
+                    local center = frame.Position
+                    local horizontal, vertical, depth = frame.RightVector * half.X, frame.UpVector * half.Y, frame.LookVector * half.Z
+                    for x = -1, 1, 2 do
+                        local side = center + horizontal * x
+                        for y = -1, 1, 2 do
+                            local edge = side + vertical * y
+                            for z = -1, 1, 2 do
+                                local projected = camera:WorldToViewportPoint(edge + depth * z)
+                                if projected.Z <= 0.1 or not IsFinite(projected.X) or not IsFinite(projected.Y) then return nil end
+                                minimumX, minimumY = math.min(minimumX, projected.X), math.min(minimumY, projected.Y)
+                                maximumX, maximumY = math.max(maximumX, projected.X), math.max(maximumY, projected.Y)
                             end
                         end
                     end
                 end
                 local size = camera.ViewportSize
-                if maximum.X < 0 or maximum.Y < 0 or minimum.X > size.X or minimum.Y > size.Y then return nil end
-                if minimum.X == math.huge or maximum.X - minimum.X < 1 or maximum.Y - minimum.Y < 1 then return nil end
-                return { X = minimum.X, Y = minimum.Y, Width = maximum.X - minimum.X, Height = maximum.Y - minimum.Y }
+                if maximumX < 0 or maximumY < 0 or minimumX > size.X or minimumY > size.Y then return nil end
+                if minimumX == math.huge or maximumX - minimumX < 1 or maximumY - minimumY < 1 then return nil end
+                return { X = minimumX, Y = minimumY, Width = maximumX - minimumX, Height = maximumY - minimumY }
             end
 
             local function RenderPlayer(target: any, camera: Camera, origin: Vector3, deltaTime: number): ()
                 local player = target.Player
-                if player.Character == target.RemovingCharacter then return end
-                if player.Character ~= target.Character then AttachCharacter(target, player.Character) end
+                if player then
+                    if player.Character == target.RemovingCharacter then HideTarget(target); return end
+                    if player.Character ~= target.Character then AttachCharacter(target, player.Character) end
+                end
                 local character = target.Character
-                if not character or not character.Parent then return end
+                if not character or not character:IsDescendantOf(workspace) then HideTarget(target); return end
                 local humanoid = character:FindFirstChildOfClass("Humanoid")
-                local root = character:FindFirstChild("HumanoidRootPart") or character.PrimaryPart
-                if not humanoid or not root or not root:IsA("BasePart") or humanoid.Health <= 0 then return end
-                local team = if player == LocalPlayer then "Local" elseif LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team then "Allies" else "Enemies"
+                if humanoid and humanoid.Health <= 0 then HideTarget(target); return end
+                local allied = player and player ~= LocalPlayer and LocalPlayer.Team ~= nil and player.Team == LocalPlayer.Team
+                local team = target.Profile or (if options.Profile then options.Profile(player) elseif player == LocalPlayer then "Local" elseif allied and table.find(Teams, "Allies") then "Allies" else Teams[1])
+                local changed = target.Revision ~= Preview.Revision or target.Team ~= team
                 SyncItems(target, team)
                 local settings = target.Config.Settings
-                if settings.Enabled == false then return end
-                local distance = (origin - root.Position).Magnitude
-                if distance > math.min(tracker.MaxDistance, settings.MaxDistance or math.huge) then return end
-                if (tracker.TeamCheck or settings.TeamCheck) and team == "Allies" then return end
+                if settings.Enabled == false then HideTarget(target); return end
+                local pivot = character:GetPivot()
+                local distance = (origin - pivot.Position).Magnitude
+                if distance > math.min(tracker.MaxDistance, settings.MaxDistance or math.huge) then HideTarget(target); return end
+                if not options.Profile and (tracker.TeamCheck or settings.TeamCheck) and allied then HideTarget(target); return end
+                local refreshRate = tonumber(settings.RefreshRate)
+                target.RefreshElapsed = (target.RefreshElapsed or 0) + deltaTime
+                if refreshRate and not changed and target.HasRendered and target.RefreshElapsed < 1 / math.clamp(refreshRate, 1, 240) then return end
+                target.RefreshElapsed = if refreshRate then target.RefreshElapsed % (1 / math.clamp(refreshRate, 1, 240)) else 0
+                target.HasRendered = true
+                target.Generation = (target.Generation or 0) + 1
+                target.Drawn = target.Drawn or {}
                 if not target.Parts then
                     target.Parts = {}
-                    for _, child in character:GetChildren() do
-                        if child:IsA("BasePart") and child.Name ~= "HumanoidRootPart" and child.Transparency < 1 then table.insert(target.Parts, child) end
+                    for _, child in character:GetDescendants() do
+                        if child:IsA("BasePart") and child.Name ~= "HumanoidRootPart" then table.insert(target.Parts, child) end
                     end
                 end
+                local root = character:FindFirstChild("HumanoidRootPart")
                 local rect = WorldBounds(target, camera)
-                if not rect then return end
+                if not rect then HideTarget(target); return end
                 local context = {
-                    Player = player, Character = character, Humanoid = humanoid, RootPart = root,
+                    Player = player, Character = character, Humanoid = humanoid, RootPart = root, Pivot = pivot,
                     Camera = camera, Distance = distance, Team = team, DeltaTime = deltaTime, Data = {},
-                    Items = target.Items, Parts = target.Parts, Scale = settings.TextScale or tracker.TextScale, Layer = layer, ViewportSize = camera.ViewportSize,
+                    Items = target.Items, Parts = target.Parts, Settings = settings, Scale = settings.TextScale or tracker.TextScale, Layer = layer, ViewportSize = camera.ViewportSize,
+                    Drawn = target.Drawn, Generation = target.Generation,
                 }
-                if Preview.DataProvider then
-                    local success, data = CallProvider(Preview.DataProvider, context, "DataProvider")
-                    if not success or type(data) ~= "table" then return end
+                local dataProvider = options.DataProvider or Preview.DataProvider
+                if dataProvider then
+                    local success, data = CallProvider(dataProvider, context, "DataProvider")
+                    if not success or type(data) ~= "table" then HideTarget(target); return end
                     context.Data = data
                 end
                 if tracker.Filter then
                     local success, allowed = CallProvider(tracker.Filter, context, "Filter")
-                    if not success or allowed ~= true then return end
+                    if not success or allowed ~= true then HideTarget(target); return end
                 end
-                if tracker.Destroyed or target.Removed or target.Character ~= character then return end
+                if tracker.Destroyed or target.Removed or target.Character ~= character then HideTarget(target); return end
                 SyncItems(target, team)
                 for _, itemId in Preview.ItemOrder do ResolveItem(target.Items[itemId], context) end
-                if tracker.Destroyed or target.Removed or target.Character ~= character then return end
-                Layout(rect, context)
+                if tracker.Destroyed or target.Removed or target.Character ~= character then HideTarget(target); return end
+                rect = Layout(rect, context)
                 for _, itemId in Preview.ItemOrder do
                     local item = target.Items[itemId]
                     if item.Enabled then RenderItem(item, context) end
+                end
+                Preview:RenderTracer(target.Items, rect, settings, context)
+                for object, generation in target.Drawn do
+                    if generation ~= target.Generation then
+                        if object.Visible then object.Visible = false end
+                        target.Drawn[object] = nil
+                    end
                 end
                 target.Visible, target.Bounds = true, rect
                 if tracker.Chams and settings.Chams ~= false then
@@ -11769,6 +12036,8 @@ do
                     target.Highlight.OutlineColor = target.Highlight.FillColor
                     target.Highlight.FillTransparency = target.Config.ModelTransparency
                     target.Highlight.OutlineTransparency, target.Highlight.Enabled = 0.2, true
+                elseif target.Highlight then
+                    target.Highlight.Enabled = false
                 end
             end
 
@@ -11803,31 +12072,55 @@ do
                 if index then table.remove(Preview.Trackers, index) end
             end
 
-            table.insert(tracker.Connections, Players.PlayerAdded:Connect(function(player: Player): () setthreadidentity(8); AddPlayer(player) end))
-            table.insert(tracker.Connections, Players.PlayerRemoving:Connect(function(player: Player): () setthreadidentity(8); RemovePlayer(player) end))
-            for _, player in Players:GetPlayers() do AddPlayer(player) end
+            function tracker:AddObject(object: Model, profile: string): ()
+                if self.Destroyed or self.Targets[object] then return end
+                assert(table.find(Teams, profile), "Unknown ESP profile")
+                local target = { Object = object, Profile = profile, Items = {}, Connections = {}, CharacterConnections = {}, Revision = -1, Visible = false }
+                self.Targets[object] = target
+                AttachCharacter(target, object)
+            end
+
+            function tracker:RemoveObject(object: Model): ()
+                RemovePlayer(object)
+            end
+
+            if not options.Objects then
+                table.insert(tracker.Connections, Players.PlayerAdded:Connect(function(player: Player): () setthreadidentity(8); AddPlayer(player) end))
+                table.insert(tracker.Connections, Players.PlayerRemoving:Connect(function(player: Player): () setthreadidentity(8); RemovePlayer(player) end))
+                for _, player in Players:GetPlayers() do AddPlayer(player) end
+            end
             table.insert(tracker.Connections, RunService.RenderStepped:Connect(function(deltaTime: number): ()
                 setthreadidentity(8)
                 if tracker.Destroyed or tracker.Updating then return end
-                for _, target in tracker.Targets do HideTarget(target) end
-                if not tracker.Enabled or Library.Unloaded then return end
+                if not tracker.Enabled or Library.Unloaded then
+                    for _, target in tracker.Targets do HideTarget(target) end
+                    return
+                end
                 local camera = workspace.CurrentCamera
-                if not camera then return end
+                if not camera then
+                    for _, target in tracker.Targets do HideTarget(target) end
+                    return
+                end
                 local localCharacter = LocalPlayer.Character
-                local localRoot = if localCharacter then localCharacter:FindFirstChild("HumanoidRootPart") else nil
-                local origin = if localRoot and localRoot:IsA("BasePart") then localRoot.Position else camera.CFrame.Position
+                local origin = if localCharacter and localCharacter:IsDescendantOf(workspace) then localCharacter:GetPivot().Position else camera.CFrame.Position
                 tracker.Updating = true
                 for _, target in tracker.Targets do
                     local success, message = pcall(RenderPlayer, target, camera, origin, deltaTime)
                     if not success then
                         HideTarget(target)
-                        ProviderError(target.Player.Name, message)
+                        ProviderError((target.Player or target.Object).Name, message)
                     end
                 end
                 tracker.Updating = false
             end))
             table.insert(self.Trackers, tracker)
             return tracker
+        end
+
+        function Preview:TrackObjects(_options: { [string]: any }?): any
+            local options = table.clone(_options or {})
+            options.Objects = true
+            return self:TrackPlayers(options)
         end
 
         local function Hit(point: Vector2): any
@@ -11963,7 +12256,10 @@ do
                 for _, object in item.Drawings do object.Visible = false end
                 item.Hover.Visible = false
             end
-            if not IsShown() then
+            if Preview.Items.Tracer then
+                for _, object in Preview.Items.Tracer.Drawings do object.Visible = false end
+            end
+            if not IsShown() or Preview.ObjectAvailable == false then
                 Drag, Pointer = nil, nil
                 SetHover(nil)
                 SettingsMenu:Close()
@@ -11977,8 +12273,9 @@ do
             Model:PivotTo(CFrame.new(ModelCenter) * CFrame.Angles(0, math.rad(Preview.Rotation), 0) * CFrame.new(-ModelCenter) * BasePivot)
             Preview:UpdateModelAppearance()
             local rect = ModelRect()
+            rect = Layout(rect)
             Preview.Bounds = rect
-            Layout(rect)
+            Preview:RenderTracer(Preview.Items, rect, Preview.ProfileSettings)
             local hovered = if CurrentMenu then nil elseif Drag and Drag.Item then Drag.Item else Hit(MousePoint())
             SetHover(hovered)
             if not Drag then
@@ -12007,6 +12304,10 @@ do
         function Preview:Destroy(): ()
             if self.Destroyed then return end
             self.Destroyed = true
+            for _, entry in IconMasks do
+                if entry.Image then entry.Image:Destroy() end
+            end
+            table.clear(IconMasks)
             for index = #self.Trackers, 1, -1 do self.Trackers[index]:Destroy() end
             for _, connection in self.Connections do connection:Disconnect() end
             table.clear(self.Connections)
@@ -12026,6 +12327,16 @@ do
             if index and not Groupbox.Destroyed then table.remove(Groupbox.Elements, index) end
             if Options[Idx] == self then Options[Idx] = nil end
             if not Groupbox.Destroyed and not Library.Unloaded then Groupbox:Resize() end
+        end
+
+        for _, name in {
+            "SetTeam", "SetValue", "SetItem", "SetSettings", "ApplyProfileControls", "BindProfileControls",
+            "SetObject", "SetHeight", "SetModelColor", "SetModelStyle", "SetExpanded", "Reset", "SetVisible", "Destroy",
+        } do
+            local method = Preview[name]
+            Preview[name] = function(self: any, ...: any): ...any
+                return Library:WithUIIdentity(method, self, ...)
+            end
         end
 
         ReadModel()
@@ -13544,116 +13855,10 @@ function Library:GetNotificationColor(color: any): Color3
     return Library.Scheme.AccentColor
 end
 
-function Library:ResolveNotificationSegmentIcon(segment: any): string?
-    local reference = segment
-    local explicit = false
-    if type(segment) == "table" then
-        reference = segment.Icon or segment.Image or segment.AssetId or segment.Text
-        explicit = segment.Icon ~= nil or segment.Image ~= nil or segment.AssetId ~= nil
-    end
-    if type(reference) == "number" and (type(segment) ~= "table" or explicit) then
-        if reference > 0 and reference < math.huge and reference % 1 == 0 then return string.format("rbxassetid://%.0f", reference) end
-    elseif type(reference) == "string" then
-        if string.match(reference, "^rbxassetid://%d+$") then return reference end
-        if explicit and string.match(reference, "^%d+$") then return "rbxassetid://" .. reference end
-    end
-    return nil
-end
-
-function Library:MeasureNotificationInlineText(text: string, font: Font, textSize: number, bold: boolean, cache: { [string]: any }): (number, number)
-    local key = (if bold then "bold:" else "normal:") .. text
-    local cached = cache[key]
-    if cached then return cached.X, cached.Y end
-    local escaped = Library:EscapeNotificationText(text)
-    local width, height = Library:GetTextBounds(if bold then "<b>" .. escaped .. "</b>" else escaped, font, textSize, 1e6)
-    if width == 0 and text ~= "" and string.match(text, "^%s+$") then
-        local padded = Library:GetTextBounds(if bold then "<b>|" .. escaped .. "|</b>" else "|" .. escaped .. "|", font, textSize, 1e6)
-        local padding = Library:GetTextBounds(if bold then "<b>||</b>" else "||", font, textSize, 1e6)
-        width = math.max(0, padded - padding)
-    end
-    cache[key] = Vector2.new(width, height)
-    return width, height
-end
-
-function Library:LayoutNotificationSegments(segments: { any }, font: Font, textSize: number, available: number, cache: { [string]: any }, defaultColor: any): ({ any }, number, number)
-    local _, fontHeight = Library:MeasureNotificationInlineText("Ag", font, textSize, false, cache)
-    local layout = { Runs = {}, Lines = {}, Current = { Width = 0, Height = math.max(textSize, fontHeight) } }
-    table.insert(layout.Lines, layout.Current)
-
-    function layout:NextLine(): ()
-        self.Current = { Width = 0, Height = math.max(textSize, fontHeight) }
-        table.insert(self.Lines, self.Current)
-    end
-
-    function layout:Place(run: any, width: number, height: number): ()
-        local line = self.Current
-        if line.Width > 0 and line.Width + width > available then self:NextLine(); line = self.Current end
-        run.X, run.Line, run.Width, run.Height = line.Width, line, math.min(width, available), height
-        local previous = self.Runs[#self.Runs]
-        if run.Text and previous and previous.Text and previous.Line == line and previous.Color == run.Color and previous.Bold == run.Bold then
-            previous.Text ..= run.Text
-            previous.Width += run.Width
-        else
-            table.insert(self.Runs, run)
-        end
-        line.Width += run.Width
-        line.Height = math.max(line.Height, height)
-    end
-
-    function layout:PlaceText(text: string, color: any, bold: boolean): ()
-        local width, height = Library:MeasureNotificationInlineText(text, font, textSize, bold, cache)
-        if width <= available then
-            self:Place({ Text = text, Color = color, Bold = bold }, width, height)
-            return
-        end
-        for first, last in utf8.graphemes(text) do
-            local character = string.sub(text, first, last)
-            local characterWidth, characterHeight = Library:MeasureNotificationInlineText(character, font, textSize, bold, cache)
-            self:Place({ Text = character, Color = color, Bold = bold }, characterWidth, characterHeight)
-        end
-    end
-
-    for _, segment in segments do
-        local properties = if type(segment) == "table" then segment else {}
-        local image = Library:ResolveNotificationSegmentIcon(segment)
-        if image then
-            local margin = math.min(2, math.max(0, (available - 1) / 2))
-            local size = math.min(math.clamp(tonumber(properties.Size) or (textSize + 1) * 2, 8, 64), available - margin * 2)
-            layout:Place({ Image = image, Color = properties.Color, Margin = margin, ImageSize = size }, size + margin * 2, size)
-        else
-            local text = tostring(if type(segment) == "table" then properties.Text or "" else segment)
-            text = string.gsub(string.gsub(text, "\r\n", "\n"), "\r", "\n")
-            local color, bold = properties.Color or defaultColor, properties.Bold == true
-            for word, whitespace in string.gmatch(text, "(%S*)(%s*)") do
-                if word ~= "" then layout:PlaceText(word, color, bold) end
-                for index = 1, #whitespace do
-                    local character = string.sub(whitespace, index, index)
-                    if character == "\n" then
-                        layout:NextLine()
-                    elseif layout.Current.Width > 0 then
-                        local spacing = if character == "\t" then "    " else " "
-                        local width, height = Library:MeasureNotificationInlineText(spacing, font, textSize, bold, cache)
-                        if layout.Current.Width + width <= available then layout:Place({ Text = spacing, Color = color, Bold = bold }, width, height) end
-                    end
-                end
-            end
-        end
-    end
-    local width, height = 0, 0
-    for _, line in layout.Lines do
-        line.Y = height
-        width = math.max(width, line.Width)
-        height += line.Height + 1
-    end
-    for _, run in layout.Runs do run.Y = run.Line.Y + (run.Line.Height - run.Height) / 2 end
-    return layout.Runs, width, math.max(0, height - 1)
-end
-
 function Library:FormatNotificationSegments(segments: { any }): string
     assert(type(segments) == "table", "Notification segments must be a table")
     local formatted = table.create(#segments)
     for _, segment in segments do
-        if Library:ResolveNotificationSegmentIcon(segment) then continue end
         local text = Library:EscapeNotificationText(if type(segment) == "table" then segment.Text or "" else segment)
         if type(segment) == "table" then
             if segment.Bold then text = "<b>" .. text .. "</b>" end
@@ -13717,7 +13922,7 @@ function Library:Notify(...: any): any
         Closable = info.Closable == true, Icon = info.Icon, BigIcon = info.BigIcon, IconColor = info.IconColor,
         SoundId = info.SoundId, Volume = tonumber(info.Volume) or 3,
         Destroyed = false, Disposed = false, Ready = false, LayoutRevision = 0,
-        Tasks = {}, Tweens = {}, Connections = {}, InlineElements = {}, InlineMeasurements = {},
+        Tasks = {}, Tweens = {}, Connections = {},
     }
     local frame = New("Frame", {
         AnchorPoint = Vector2.new(if string.lower(Library.NotifySide) == "left" then 0 else 1, 0),
@@ -13814,53 +14019,6 @@ function Library:Notify(...: any): any
         return text
     end
 
-    function data:RenderInline(runs: { any }?): ()
-        if runs and not self.InlineHolder then
-            self.InlineHolder = New("Frame", { Name = "InlineContent", BackgroundTransparency = 1, ClipsDescendants = true, Parent = holder })
-        end
-        if self.InlineHolder then
-            self.InlineHolder.Visible = runs ~= nil
-            self.InlineHolder.Position, self.InlineHolder.Size = description.Position, description.Size
-        end
-        for index = #self.InlineElements, 1, -1 do
-            local view = self.InlineElements[index]
-            local run = runs and runs[index]
-            if not run or view.ClassName ~= (if run.Image then "ImageLabel" else "TextLabel") then
-                Library:RemoveFromRegistry(view)
-                view:Destroy()
-                self.InlineElements[index] = nil
-            end
-        end
-        if not runs then return end
-        for index, run in runs do
-            local view = self.InlineElements[index]
-            if not view then
-                view = New(if run.Image then "ImageLabel" else "TextLabel", {
-                    Name = "InlineSegment" .. index, BackgroundTransparency = 1, BorderSizePixel = 0, Parent = self.InlineHolder,
-                })
-                self.InlineElements[index] = view
-            end
-            view.Position = UDim2.fromOffset(run.X + (run.Margin or 0), run.Y)
-            view.Size = UDim2.fromOffset(run.ImageSize or run.Width, run.Height)
-            local color = run.Color
-            local registry = Library.Registry[view] or {}
-            Library.Registry[view] = registry
-            if run.Image then
-                view.Image, view.ScaleType = run.Image, Enum.ScaleType.Fit
-                registry.ImageColor3 = function(): Color3 return if color then Library:GetNotificationColor(color) else Color3.new(1, 1, 1) end
-                view.ImageColor3 = registry.ImageColor3()
-            else
-                local text = Library:EscapeNotificationText(run.Text)
-                view.RichText, view.TextWrapped = true, false
-                view.Text = if run.Bold then "<b>" .. text .. "</b>" else text
-                view.FontFace, view.TextSize = description.FontFace, description.TextSize
-                view.TextXAlignment, view.TextYAlignment = Enum.TextXAlignment.Left, Enum.TextYAlignment.Center
-                registry.TextColor3 = function(): Color3 return Library:GetNotificationColor(color) end
-                view.TextColor3 = registry.TextColor3()
-            end
-        end
-    end
-
     function data:Resize(): ()
         setthreadidentity(8)
         if self.Destroyed then return end
@@ -13871,22 +14029,7 @@ function Library:Notify(...: any): any
         local maximum = math.max(1, math.min(tonumber(info.MaxWidth) or (if compact then Library.NotifyMaxWidth or 860 else 300), (ScreenGui.AbsoluteSize.X - 12) / Library.DPIScale))
         local available = math.max(1, maximum - padding * 2 - iconWidth - closeWidth)
         local text = self:GetText()
-        local runs, width, height
-        local hasImages = false
-        for _, segment in self.Segments or {} do
-            if Library:ResolveNotificationSegmentIcon(segment) then hasImages = true; break end
-        end
-        if hasImages then
-            if self.InlineFont ~= description.FontFace then self.InlineFont, self.InlineMeasurements = description.FontFace, {} end
-            local segments = self.Segments
-            if compact and self.Title then
-                segments = { { Text = self.Title .. "  ", Color = self.TitleColor or info.DescriptionColor or "FontColor", Bold = true } }
-                for _, segment in self.Segments do table.insert(segments, segment) end
-            end
-            runs, width, height = Library:LayoutNotificationSegments(segments, description.FontFace, description.TextSize, available, self.InlineMeasurements, info.DescriptionColor or "FontColor")
-        else
-            width, height = Library:GetTextBounds(if self.RichText then text else Library:EscapeNotificationText(text), description.FontFace, description.TextSize, available)
-        end
+        local width, height = Library:GetTextBounds(if self.RichText then text else Library:EscapeNotificationText(text), description.FontFace, description.TextSize, available)
         local titleWidth, titleHeight = 0, 0
         if title then
             titleWidth, titleHeight = Library:GetTextBounds(if self.RichText then self.Title else Library:EscapeNotificationText(self.Title), title.FontFace, title.TextSize, available)
@@ -13899,10 +14042,8 @@ function Library:Notify(...: any): any
         local totalHeight = math.max(if compact then 28 else 32, contentHeight + vertical * 2 + (if showTimer then 5 else 0))
         local totalWidth = math.min(maximum, math.max(28, textWidth + padding * 2 + iconWidth + closeWidth))
         description.Text = text
-        description.Visible = runs == nil
         description.Size = UDim2.fromOffset(textWidth, height)
         description.Position = UDim2.fromOffset(padding + iconWidth, vertical + (if title then titleHeight + 4 else math.max(0, (contentHeight - height) / 2)))
-        self:RenderInline(runs)
         if title then
             title.Text = self.Title
             title.Position = UDim2.fromOffset(padding + iconWidth, vertical)
@@ -13928,7 +14069,6 @@ function Library:Notify(...: any): any
         setthreadidentity(8)
         if self.Destroyed then return end
         self.Segments = nil
-        self.InlineMeasurements = {}
         if type(text) == "table" then
             self.Segments = table.create(#text)
             for _, segment in text do table.insert(self.Segments, if type(segment) == "table" then table.clone(segment) else segment) end
