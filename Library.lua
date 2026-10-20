@@ -9,6 +9,27 @@ export type ESPItemResult = boolean | string | number | {
     Color: Color3?, Transparency: number?, Segments: { { number } }?, Image: string?,
 }
 
+export type StatusViewerItem = {
+    Name: string, Label: string?, Image: (string | number)?, Icon: string?, Slot: string?, Count: number?,
+    Durability: number?, MaxDurability: number?, Equipped: boolean?,
+}
+export type StatusViewerData = {
+    Name: string?, Username: string?, UserId: number?, Avatar: (string | number)?,
+    Status: string?, StatusColor: Color3?, Health: number?, MaxHealth: number?, HealthColor: Color3?,
+    Distance: number?, DistanceUnit: string?, Items: { StatusViewerItem }?,
+}
+export type StatusViewerOptions = {
+    Title: string?, Badge: string?, Width: number?, Columns: number?, MaxItems: number?,
+    Position: UDim2?, Visible: boolean?, Animated: boolean?,
+}
+export type StatusViewer = {
+    Holder: Frame, Container: Frame, NameLabel: TextLabel, StatusLabel: TextLabel,
+    HealthLabel: TextLabel, HealthFill: Frame, Destroyed: boolean,
+    SetData: (StatusViewer, StatusViewerData?) -> (), SetVisible: (StatusViewer, boolean) -> (),
+    SetWidth: (StatusViewer, number) -> (), ResetPosition: (StatusViewer) -> (),
+    Clear: (StatusViewer) -> (), Destroy: (StatusViewer) -> (),
+}
+
 local cloneref = (cloneref or clonereference or function(instance: any)
     setthreadidentity(8)
     return instance
@@ -2403,46 +2424,27 @@ function Library:IsInsideFrame(ParentFrame: GuiObject, Frame: GuiObject)
         and GuiPos.Y + GuiSize.Y <= FramePos.Y + FrameSize.Y
 end
 
--- UI Identity Utilities
-function Library:WithUIIdentity(callback: (...any) -> ...any, ...: any): ...any
-    local getIdentity = getthreadidentity or getidentity
-    local setIdentity = setthreadidentity or setidentity
-    if type(getIdentity) ~= "function" or type(setIdentity) ~= "function" then
-        return callback(...)
-    end
-
-    local previous = getIdentity()
-    setIdentity(8)
-    local result = table.pack(pcall(callback, ...))
-    setIdentity(previous)
-    if not result[1] then
-        error(result[2], 0)
-    end
-    return table.unpack(result, 2, result.n)
-end
-
-function Library:SafeCallback(Func: (...any) -> ...any, ...: any): ...any
+function Library:SafeCallback(Func: (...any) -> ...any, ...: any)
+    setthreadidentity(8)
     if not (Func and typeof(Func) == "function") then
         return
     end
 
-    return self:WithUIIdentity(function(...: any): ...any
-        local result = table.pack(xpcall(Func, function(message: any): any
-            local setIdentity = setthreadidentity or setidentity
-            if type(setIdentity) == "function" then
-                setIdentity(8)
-            end
-            task.defer(error, debug.traceback(tostring(message), 2))
-            if Library.NotifyOnError and Library.Notify then
-                Library:Notify(message)
-            end
-            return message
-        end, ...))
-        if not result[1] then
-            return nil
+    local Result = table.pack(xpcall(Func, function(Error)
+        setthreadidentity(8)
+        task.defer(error, debug.traceback(Error, 2))
+        if Library.NotifyOnError and Library.Notify then
+            Library:Notify(Error)
         end
-        return table.unpack(result, 2, result.n)
-    end, ...)
+
+        return Error
+    end, ...))
+
+    if not Result[1] then
+        return nil
+    end
+
+    return table.unpack(Result, 2, Result.n)
 end
 
 function GetOverlappingDraggable(UI: GuiObject, TargetPos: Vector2?)
@@ -3753,6 +3755,48 @@ function Library:AddDraggableButton(...)
     return DraggableButton
 end
 
+-- Wrapped Tab Buttons
+function Library:LayoutTabButtons(holder: GuiObject, entries: any, rowHeight: number): number
+    local width = math.max(math.floor(holder.AbsoluteSize.X / self.DPIScale), 1)
+    local ordered = {}
+    for _, entry in entries do
+        local button = entry.Button or entry.ButtonHolder
+        if not entry.Destroyed and button.Visible then
+            table.insert(ordered, { Button = button, Content = entry.ButtonContent, Index = #ordered + 1 })
+        end
+    end
+    table.sort(ordered, function(left: any, right: any): boolean
+        if left.Button.LayoutOrder == right.Button.LayoutOrder then
+            return left.Index < right.Index
+        end
+
+        return left.Button.LayoutOrder < right.Button.LayoutOrder
+    end)
+
+    local rows = { { Items = {}, Width = 0 } }
+    for _, item in ordered do
+        item.Width = math.min(width, math.ceil(item.Content.AbsoluteSize.X / self.DPIScale) + 24)
+        local row = rows[#rows]
+        if #row.Items > 0 and row.Width + item.Width > width then
+            row = { Items = {}, Width = 0 }
+            table.insert(rows, row)
+        end
+        table.insert(row.Items, item)
+        row.Width += item.Width
+    end
+    for index, row in rows do
+        local extra = (width - row.Width) / math.max(#row.Items, 1)
+        local x = 0
+        for itemIndex, item in row.Items do
+            local size = if itemIndex == #row.Items then width - x else math.floor(item.Width + extra)
+            item.Button.Position = UDim2.fromOffset(x, (index - 1) * rowHeight)
+            item.Button.Size = UDim2.fromOffset(size, rowHeight)
+            x += size
+        end
+    end
+    return #rows * rowHeight
+end
+
 function Library:AddDraggableMenu(Name: string)
     setthreadidentity(8)
     local Holder = New("Frame", {
@@ -3824,6 +3868,650 @@ function Library:AddDraggableMenu(Name: string)
     PositionDraggable(Holder, Holder.Position)
 
     return Holder, Container
+end
+
+-- Status Overlay
+function Library:AddStatusOverlay(info: any): any
+    setthreadidentity(8)
+    info = info or {}
+    local holder, container = self:AddDraggableMenu(info.Title or "Status")
+    holder.AutomaticSize = Enum.AutomaticSize.None
+    holder.Size = UDim2.fromOffset(info.Width or 280, 112)
+    holder.Position = info.Position or UDim2.new(1, -292, 0, 320)
+    local label = New("TextLabel", {
+        BackgroundTransparency = 1, Text = "", TextSize = 13, RichText = true,
+        TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top, AutomaticSize = Enum.AutomaticSize.Y, Size = UDim2.new(1, -14, 0, 0), Parent = container,
+    })
+    local track = New("Frame", {
+        BorderSizePixel = 0, BackgroundColor3 = "MainColor", Size = UDim2.new(1, -14, 0, 5), Parent = container,
+    })
+    local fill = New("Frame", {
+        BorderSizePixel = 0, BackgroundColor3 = "AccentColor", Size = UDim2.fromScale(0, 1), Parent = track,
+    })
+    local icons = New("Frame", {
+        BackgroundTransparency = 1, Size = UDim2.new(1, -14, 0, 36), Visible = false, Parent = container,
+    })
+    New("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 6), Parent = icons })
+    label.LayoutOrder, track.LayoutOrder, icons.LayoutOrder = 1, 2, 3
+    local overlay = { Holder = holder, Container = container, Label = label, Fill = fill, Icons = {}, Destroyed = false }
+    local layout = container:FindFirstChildOfClass("UIListLayout")
+    if layout then
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+        overlay.LayoutConnection = layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function(): ()
+            setthreadidentity(8)
+            if not overlay.Destroyed then
+                holder.Size = UDim2.fromOffset(info.Width or 280, math.max(90, layout.AbsoluteContentSize.Y + 49))
+            end
+        end)
+    end
+
+    function overlay:SetVisible(visible: boolean): ()
+        setthreadidentity(8)
+        if not self.Destroyed then
+            holder.Visible = visible
+        end
+    end
+
+    function overlay:SetData(text: string, progress: number?, color: Color3?): ()
+        setthreadidentity(8)
+        if self.Destroyed then
+            return
+        end
+
+        if label.Text ~= text then
+            label.Text = text
+        end
+        track.Visible = progress ~= nil
+        fill.Size = UDim2.fromScale(math.clamp(progress or 0, 0, 1), 1)
+        if color then
+            fill.BackgroundColor3 = color
+        end
+    end
+
+    function overlay:SetIcons(images: { string }): ()
+        setthreadidentity(8)
+        if self.Destroyed then
+            return
+        end
+
+        icons.Visible = #images > 0
+        for index, image in images do
+            if index > 6 then
+                break
+            end
+
+            local view = self.Icons[index]
+            if not view then
+                view = New("ImageLabel", {
+                    BackgroundColor3 = "MainColor", BorderSizePixel = 0, Size = UDim2.fromOffset(36, 36),
+                    ScaleType = Enum.ScaleType.Fit, Parent = icons,
+                })
+                self.Icons[index] = view
+            end
+            view.Image, view.Visible = image, true
+        end
+        for index = #images + 1, #self.Icons do
+            self.Icons[index].Visible = false
+        end
+    end
+
+    function overlay:Destroy(): ()
+        setthreadidentity(8)
+        if self.Destroyed then
+            return
+        end
+
+        self.Destroyed = true
+        if self.LayoutConnection then
+            self.LayoutConnection:Disconnect()
+        end
+        local index = table.find(Library.DraggableElements, holder)
+        if index then
+            table.remove(Library.DraggableElements, index)
+        end
+        holder:Destroy()
+    end
+    overlay:SetVisible(info.Visible == true)
+    return overlay
+end
+
+-- Status Viewer
+function Library:AddStatusViewer(_info: StatusViewerOptions?): StatusViewer
+    setthreadidentity(8)
+    local info = _info or {}
+    local firstSignal = #self.Signals + 1
+    local holder, container = self:AddDraggableMenu(info.Title or "Status Viewer")
+    holder.Name = "StatusViewer"
+    holder.AutomaticSize = Enum.AutomaticSize.None
+    holder.Visible = false
+    for _, child in container:GetChildren() do
+        child:Destroy()
+    end
+
+    local header = holder:FindFirstChildWhichIsA("TextLabel") :: TextLabel
+    header.RichText = false
+    header.TextTruncate = Enum.TextTruncate.AtEnd
+    local padding = header:FindFirstChildOfClass("UIPadding") :: UIPadding
+    padding.PaddingLeft = UDim.new(0, 36)
+    padding.PaddingRight = UDim.new(0, 86)
+    local scale = holder:FindFirstChildOfClass("UIScale") :: UIScale
+    scale.Scale = self.DPIScale
+
+    local function finite(value: number?, fallback: number): number
+        return if type(value) == "number" and value == value and math.abs(value) < math.huge then value else fallback
+    end
+
+    local function corner(parent: Instance): ()
+        table.insert(Library.Corners, New("UICorner", {
+            CornerRadius = UDim.new(0, Library.CornerRadius), Parent = parent,
+        }))
+    end
+
+    local function label(parent: Instance, name: string, size: number, properties: { [string]: any }?): TextLabel
+        local values = properties or {}
+        values.Name = name
+        values.BackgroundTransparency = 1
+        values.RichText = false
+        values.TextSize = size
+        values.TextXAlignment = values.TextXAlignment or Enum.TextXAlignment.Left
+        values.TextTruncate = Enum.TextTruncate.AtEnd
+        values.Parent = parent
+        return New("TextLabel", values)
+    end
+
+    local function escape(text: string): string
+        return (text:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+            :gsub('"', "&quot;"):gsub("'", "&apos;"))
+    end
+
+    local function imageUri(value: (string | number)?): string
+        if type(value) == "number" then
+            return if finite(value, 0) > 0 then "rbxassetid://" .. string.format("%.0f", value) else ""
+        end
+        if type(value) ~= "string" or value == "" then
+            return ""
+        end
+        return if value:match("^%d+$") then "rbxassetid://" .. value else value
+    end
+
+    local headerIcon = New("ImageLabel", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 9),
+        Size = UDim2.fromOffset(16, 16), ImageColor3 = "AccentColor", Parent = holder,
+    })
+    self:ApplyLucideIcon(headerIcon, self:GetCustomIcon("scan-eye") or self:GetCustomIcon("shield"))
+    label(holder, "Badge", 10, {
+        Text = info.Badge or "PLAYER", TextTransparency = 0.45,
+        TextXAlignment = Enum.TextXAlignment.Right, Position = UDim2.new(1, -82, 0, 0),
+        Size = UDim2.fromOffset(70, 34),
+    })
+    local summary = New("Frame", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 12),
+        Size = UDim2.new(1, -24, 0, 76), Parent = container,
+    })
+    local avatarHolder = New("Frame", {
+        BackgroundColor3 = "MainColor", BorderSizePixel = 0, ClipsDescendants = true,
+        Size = UDim2.fromOffset(64, 64), Parent = summary,
+    })
+    corner(avatarHolder)
+    self:AddOutline(avatarHolder)
+    local initials = label(avatarHolder, "Initials", 23, {
+        Text = "?", TextTransparency = 0.3, TextXAlignment = Enum.TextXAlignment.Center,
+        Size = UDim2.fromScale(1, 1),
+    })
+    local avatar = New("ImageLabel", {
+        Name = "Avatar", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+        ScaleType = Enum.ScaleType.Fit, Parent = avatarHolder,
+    })
+    local nameLabel = label(summary, "PlayerName", 15, {
+        Text = "No Player", Position = UDim2.fromOffset(76, 0), Size = UDim2.new(1, -76, 0, 19),
+    })
+    local metaLabel = label(summary, "Metadata", 11, {
+        Text = "Waiting For Player Data", TextTransparency = 0.45,
+        Position = UDim2.fromOffset(76, 22), Size = UDim2.new(1, -76, 0, 15),
+    })
+    local statusDot = New("Frame", {
+        BackgroundColor3 = "AccentColor", BorderSizePixel = 0,
+        Position = UDim2.fromOffset(76, 45), Size = UDim2.fromOffset(5, 5), Parent = summary,
+    })
+    corner(statusDot)
+    local statusLabel = label(summary, "Status", 11, {
+        Text = "No Status", TextColor3 = "AccentColor", Position = UDim2.fromOffset(87, 39),
+        Size = UDim2.new(1, -178, 0, 17),
+    })
+    local healthLabel = label(summary, "Health", 11, {
+        Text = "-- / --", TextTransparency = 0.2, TextXAlignment = Enum.TextXAlignment.Right,
+        Position = UDim2.new(1, -90, 0, 39), Size = UDim2.fromOffset(90, 17),
+    })
+    local track = New("Frame", {
+        BackgroundColor3 = "OutlineColor", BorderSizePixel = 0, ClipsDescendants = true,
+        Position = UDim2.fromOffset(76, 63), Size = UDim2.new(1, -76, 0, 4), Parent = summary,
+    })
+    corner(track)
+    local fill = New("Frame", {
+        BackgroundColor3 = "AccentColor", BorderSizePixel = 0,
+        Size = UDim2.fromScale(0, 1), Parent = track,
+    })
+    corner(fill)
+    label(container, "EquipmentTitle", 10, {
+        Text = "EQUIPMENT", TextTransparency = 0.4,
+        Position = UDim2.fromOffset(12, 90), Size = UDim2.new(1, -100, 0, 16),
+    })
+    local countLabel = label(container, "EquipmentCount", 10, {
+        Text = "0 ITEMS", TextTransparency = 0.55, TextXAlignment = Enum.TextXAlignment.Right,
+        Position = UDim2.new(1, -100, 0, 90), Size = UDim2.fromOffset(88, 16),
+    })
+    local grid = New("Frame", {
+        BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 114),
+        Size = UDim2.new(1, -24, 0, 54), Parent = container,
+    })
+    local layout = New("UIGridLayout", {
+        SortOrder = Enum.SortOrder.LayoutOrder, CellPadding = UDim2.fromOffset(6, 6), Parent = grid,
+    })
+    local empty = label(container, "EmptyEquipment", 12, {
+        Text = "Equipment Unavailable", TextTransparency = 0.55,
+        Position = UDim2.fromOffset(12, 114), Size = UDim2.new(1, -24, 0, 54),
+        TextXAlignment = Enum.TextXAlignment.Center,
+    })
+
+    type Slot = {
+        Holder: Frame, Image: ImageLabel, Placeholder: TextLabel, Name: TextLabel,
+        Count: TextLabel, Track: Frame, Fill: Frame, Outline: UIStroke,
+        Tooltip: any?, TooltipText: string?,
+    }
+    type State = {
+        Slots: { Slot }, Connections: { RBXScriptConnection }, Width: number,
+        Columns: number, MaxItems: number, ItemCount: number, Progress: number?, Tween: Tween?,
+    }
+    local state: State = {
+        Slots = {}, Connections = {}, Width = math.clamp(finite(info.Width, 392), 280, 560),
+        Columns = math.clamp(math.floor(finite(info.Columns, 7)), 3, 8),
+        MaxItems = math.clamp(math.floor(finite(info.MaxItems, 14)), 1, 28), ItemCount = 0,
+    }
+    local viewer: StatusViewer = {
+        Holder = holder, Container = container, NameLabel = nameLabel, StatusLabel = statusLabel,
+        HealthLabel = healthLabel, HealthFill = fill, Destroyed = false,
+    } :: any
+    local unload: (() -> ())?
+
+    local function stopTween(): ()
+        if state.Tween then
+            state.Tween:Cancel()
+            state.Tween:Destroy()
+            state.Tween = nil
+        end
+    end
+
+    local function fitPosition(position: UDim2): ()
+        local viewport = ScreenGui.AbsoluteSize
+        if viewport.X <= 0 or viewport.Y <= 0 then
+            holder.Position = position
+            return
+        end
+
+        local width = holder.Size.X.Offset * scale.Scale
+        local height = holder.Size.Y.Offset * scale.Scale
+        local x = viewport.X * position.X.Scale + position.X.Offset
+        local y = viewport.Y * position.Y.Scale + position.Y.Offset
+        holder.Position = UDim2.fromOffset(
+            math.clamp(x, 6, math.max(6, viewport.X - width - 6)),
+            math.clamp(y, 6, math.max(6, viewport.Y - height - 6))
+        )
+    end
+
+    local function resize(): ()
+        setthreadidentity(8)
+        if viewer.Destroyed then
+            return
+        end
+
+        local available = ScreenGui.AbsoluteSize.X / math.max(scale.Scale, 0.1) - 24
+        local width = if ScreenGui.AbsoluteSize.X > 0
+            then math.min(state.Width, math.max(220, available)) else state.Width
+        local columns = math.min(state.Columns, math.max(3, math.floor((width - 18) / 46)))
+        local rows = math.max(1, math.ceil(state.ItemCount / columns))
+        layout.FillDirectionMaxCells = columns
+        local cellWidth = math.floor((width - 24 - 6 * (columns - 1)) / columns)
+        layout.CellSize = UDim2.fromOffset(cellWidth, 54)
+        grid.Size = UDim2.new(1, -24, 0, rows * 60 - 6)
+        holder.Size = UDim2.fromOffset(width, 155 + rows * 60)
+        fitPosition(holder.Position)
+    end
+
+    local function clearTooltip(slot: Slot): ()
+        if slot.Tooltip then
+            slot.Tooltip:Destroy()
+            slot.Tooltip = nil
+            slot.TooltipText = nil
+        end
+    end
+
+    local function createSlot(index: number): Slot
+        local frame = New("Frame", {
+            Name = "Equipment" .. index, BackgroundColor3 = "MainColor", BorderSizePixel = 0,
+            LayoutOrder = index, Parent = grid,
+        })
+        corner(frame)
+        local outline = New("UIStroke", { Color = "OutlineColor", Thickness = 1, Parent = frame })
+        local itemImage = New("ImageLabel", {
+            BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0),
+            Position = UDim2.new(0.5, 0, 0, 3), Size = UDim2.fromOffset(32, 32),
+            ScaleType = Enum.ScaleType.Fit, Parent = frame,
+        })
+        local placeholder = label(frame, "Placeholder", 18, {
+            Text = "?", TextTransparency = 0.5, TextXAlignment = Enum.TextXAlignment.Center,
+            Size = UDim2.new(1, 0, 0, 36),
+        })
+        local itemName = label(frame, "ItemName", 9, {
+            Text = "", TextXAlignment = Enum.TextXAlignment.Center, TextTransparency = 0.2,
+            Position = UDim2.fromOffset(3, 36), Size = UDim2.new(1, -6, 0, 13),
+        })
+        local count = label(frame, "Quantity", 9, {
+            Text = "", TextXAlignment = Enum.TextXAlignment.Right,
+            Position = UDim2.fromOffset(2, 1), Size = UDim2.new(1, -5, 0, 12),
+        })
+        local itemTrack = New("Frame", {
+            BackgroundColor3 = "OutlineColor", BorderSizePixel = 0, Visible = false,
+            Position = UDim2.new(0, 4, 1, -3), Size = UDim2.new(1, -8, 0, 2), Parent = frame,
+        })
+        local itemFill = New("Frame", {
+            BackgroundColor3 = "AccentColor", BorderSizePixel = 0, Size = UDim2.fromScale(1, 1),
+            Parent = itemTrack,
+        })
+        return {
+            Holder = frame, Image = itemImage, Placeholder = placeholder, Name = itemName,
+            Count = count, Track = itemTrack, Fill = itemFill, Outline = outline,
+        }
+    end
+
+    function viewer:SetData(_data: StatusViewerData?): ()
+        setthreadidentity(8)
+        if self.Destroyed then
+            return
+        end
+
+        local data = _data or {}
+        local name = data.Name or data.Username or "No Player"
+        nameLabel.Text = name
+        local metadata = {}
+        if data.Username and data.Username ~= "" then
+            table.insert(metadata, "@" .. data.Username:gsub("^@", ""))
+        end
+        if finite(data.Distance, -1) >= 0 then
+            table.insert(metadata, string.format("%.0f %s", data.Distance, data.DistanceUnit or "m"))
+        end
+        metaLabel.Text = if #metadata > 0 then table.concat(metadata, "  ·  ") else (if _data then "Player" else "Waiting For Player Data")
+        local uri = imageUri(data.Avatar)
+        if uri == "" and finite(data.UserId, 0) > 0 then
+            uri = string.format("rbxthumb://type=AvatarHeadShot&id=%.0f&w=150&h=150", data.UserId)
+        end
+        avatar.Image = uri
+        avatar.Visible = uri ~= ""
+        initials.Visible = uri == ""
+        initials.Text = if name == "No Player" then "?" else string.sub(name, 1, (utf8.offset(name, 2) or #name + 1) - 1)
+        statusLabel.Text = data.Status or "No Status"
+        FillInstance({ TextColor3 = data.StatusColor or "AccentColor" }, statusLabel)
+        FillInstance({ BackgroundColor3 = data.StatusColor or "AccentColor" }, statusDot)
+        FillInstance({ BackgroundColor3 = data.HealthColor or "AccentColor" }, fill)
+        local maximum = finite(data.MaxHealth, 100)
+        local health = math.clamp(finite(data.Health, 0), 0, math.max(maximum, 0))
+        local progress = if maximum > 0 then health / maximum else 0
+        healthLabel.Text = if data.Health ~= nil and maximum > 0
+            then string.format("%.0f / %.0f", health, maximum) else "-- / --"
+        if state.Progress ~= progress then
+            stopTween()
+            if info.Animated ~= false and state.Progress ~= nil and holder.Visible then
+                state.Tween = TweenService:Create(fill, Library.TweenInfo, { Size = UDim2.fromScale(progress, 1) })
+                state.Tween:Play()
+            else
+                fill.Size = UDim2.fromScale(progress, 1)
+            end
+            state.Progress = progress
+        end
+
+        local items = data.Items or {}
+        state.ItemCount = math.min(#items, state.MaxItems)
+        empty.Visible = state.ItemCount == 0
+        countLabel.Text = if #items > state.MaxItems
+            then string.format("%d / %d ITEMS", state.ItemCount, #items)
+            else string.format("%d %s", #items, if #items == 1 then "ITEM" else "ITEMS")
+        for index = 1, state.ItemCount do
+            local item = items[index]
+            local slot = state.Slots[index] or createSlot(index)
+            state.Slots[index] = slot
+            slot.Holder.Visible = true
+            slot.Name.Text = item.Label or item.Name
+            local count = math.max(1, math.floor(finite(item.Count, 1)))
+            slot.Count.Text = if count > 1 then "×" .. tostring(count) else ""
+            local asset = imageUri(item.Image)
+            local icon = if asset == "" then Library:GetCustomIcon(item.Icon or "package") else nil
+            slot.Image.Image = asset
+            slot.Image.ImageRectOffset = Vector2.zero
+            slot.Image.ImageRectSize = Vector2.zero
+            if icon then
+                Library:ApplyLucideIcon(slot.Image, icon)
+            end
+            FillInstance({ ImageColor3 = if asset ~= "" then "WhiteColor" else "FontColor" }, slot.Image)
+            slot.Image.Visible = asset ~= "" or icon ~= nil
+            slot.Placeholder.Visible = not slot.Image.Visible
+            FillInstance({ Color = if item.Equipped then "AccentColor" else "OutlineColor" }, slot.Outline)
+            local maxCondition = finite(item.MaxDurability, 100)
+            local condition = math.clamp(finite(item.Durability, 0), 0, math.max(maxCondition, 0))
+            slot.Track.Visible = item.Durability ~= nil and maxCondition > 0
+            slot.Fill.Size = UDim2.fromScale(if maxCondition > 0 then condition / maxCondition else 0, 1)
+            local tooltip = escape(item.Name)
+            if item.Slot then
+                tooltip ..= "\n" .. escape(item.Slot)
+            end
+            if item.Equipped then
+                tooltip ..= " · Equipped"
+            end
+            if count > 1 then
+                tooltip ..= string.format("\nQuantity: %d", count)
+            end
+            if slot.Track.Visible then
+                tooltip ..= string.format("\nCondition: %.0f%%", condition / maxCondition * 100)
+            end
+            if slot.TooltipText ~= tooltip or not slot.Tooltip then
+                clearTooltip(slot)
+                slot.TooltipText = tooltip
+                slot.Tooltip = Library:AddTooltip(tooltip, nil, slot.Holder)
+            end
+        end
+        for index = state.ItemCount + 1, #state.Slots do
+            local slot = state.Slots[index]
+            slot.Holder.Visible = false
+            slot.Image.Image = ""
+            slot.Name.Text = ""
+            clearTooltip(slot)
+        end
+        resize()
+    end
+
+    function viewer:SetVisible(visible: boolean): ()
+        setthreadidentity(8)
+        if self.Destroyed then
+            return
+        end
+
+        holder.Visible = visible
+        for _, slot in state.Slots do
+            if not visible and slot.Tooltip then
+                slot.Tooltip:Destroy()
+                slot.Tooltip = nil
+            elseif visible and slot.Holder.Visible and not slot.Tooltip and slot.TooltipText then
+                slot.Tooltip = Library:AddTooltip(slot.TooltipText, nil, slot.Holder)
+            end
+        end
+        if not visible then
+            stopTween()
+            fill.Size = UDim2.fromScale(state.Progress or 0, 1)
+        end
+    end
+
+    function viewer:SetWidth(width: number): ()
+        setthreadidentity(8)
+        state.Width = math.clamp(finite(width, state.Width), 280, 560)
+        resize()
+    end
+
+    function viewer:ResetPosition(): ()
+        setthreadidentity(8)
+        if not self.Destroyed then
+            fitPosition(info.Position or UDim2.new(1, -holder.Size.X.Offset * scale.Scale - 18, 0, 90))
+        end
+    end
+
+    function viewer:Clear(): ()
+        setthreadidentity(8)
+        self:SetVisible(false)
+        self:SetData(nil)
+    end
+
+    function viewer:Destroy(): ()
+        setthreadidentity(8)
+        if self.Destroyed then
+            return
+        end
+
+        self.Destroyed = true
+        stopTween()
+        for _, slot in state.Slots do
+            clearTooltip(slot)
+        end
+        for _, connection in state.Connections do
+            connection:Disconnect()
+            local index = table.find(Library.Signals, connection)
+            if index then
+                table.remove(Library.Signals, index)
+            end
+        end
+        for _, collection in { Library.Scales, Library.Corners, Library.DraggableElements } do
+            for index = #collection, 1, -1 do
+                local object = collection[index]
+                if object == holder or object:IsDescendantOf(holder) then
+                    table.remove(collection, index)
+                    if Library.ScalesOffset then
+                        Library.ScalesOffset[object] = nil
+                    end
+                end
+            end
+        end
+        for _, object in holder:GetDescendants() do
+            Library:RemoveFromRegistry(object)
+        end
+        Library:RemoveFromRegistry(holder)
+        local unloadIndex = table.find(Library.UnloadSignals, unload)
+        if unloadIndex then
+            table.remove(Library.UnloadSignals, unloadIndex)
+        end
+        holder:Destroy()
+        table.clear(state.Connections)
+        table.clear(state.Slots)
+    end
+
+    for index = firstSignal, #self.Signals do
+        table.insert(state.Connections, self.Signals[index])
+    end
+    table.insert(state.Connections, ScreenGui:GetPropertyChangedSignal("AbsoluteSize"):Connect(resize))
+    table.insert(state.Connections, scale:GetPropertyChangedSignal("Scale"):Connect(resize))
+    unload = function(): ()
+        setthreadidentity(8)
+        viewer:Destroy()
+    end
+    self:OnUnload(unload)
+    viewer:SetData(nil)
+    viewer:ResetPosition()
+    viewer:SetVisible(info.Visible == true)
+    return viewer
+end
+
+-- Minimap Overlay
+function Library:AddMinimap(info: any): any
+    setthreadidentity(8)
+    info = info or {}
+    local holder, container = self:AddDraggableMenu(info.Title or "Minimap")
+    holder.AutomaticSize = Enum.AutomaticSize.None
+    local viewport = New("ImageButton", {
+        Name = "Map", BackgroundColor3 = "MainColor", BorderSizePixel = 0,
+        Image = "", AutoButtonColor = false, ClipsDescendants = true,
+        Size = UDim2.fromScale(1, 1), Parent = container,
+    })
+    local center = New("TextButton", {
+        BackgroundTransparency = 1, Text = "Center", TextSize = 13,
+        AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -7, 0, 0),
+        Size = UDim2.fromOffset(58, 34), Parent = holder,
+    })
+    local overlay = { Holder = holder, Viewport = viewport, Destroyed = false }
+
+    function overlay:SetVisible(visible: boolean): ()
+        setthreadidentity(8)
+        if not self.Destroyed then
+            holder.Visible = visible
+        end
+    end
+
+    function overlay:SetSize(size: number): ()
+        setthreadidentity(8)
+        if not self.Destroyed then
+            size = math.clamp(size, 160, 500)
+            holder.Size = UDim2.fromOffset(size + 14, size + 49)
+        end
+    end
+
+    function overlay:ResetPosition(): ()
+        setthreadidentity(8)
+        if not self.Destroyed then
+            holder.AnchorPoint = Vector2.new(1, 0)
+            holder.Position = UDim2.new(1, -18, 0, 70)
+        end
+    end
+
+    function overlay:Center(): ()
+        setthreadidentity(8)
+        if not self.Destroyed and info.OnCenter then
+            info.OnCenter()
+        end
+    end
+
+    local connection = center.Activated:Connect(function(): ()
+            setthreadidentity(8)
+        overlay:Center()
+    end)
+
+    function overlay:Destroy(): ()
+        setthreadidentity(8)
+        if self.Destroyed then
+            return
+        end
+
+        self.Destroyed = true
+        connection:Disconnect()
+        local index = table.find(Library.DraggableElements, holder)
+        if index then
+            table.remove(Library.DraggableElements, index)
+        end
+        for _, registry in { Library.Corners, Library.Scales } do
+            for entry = #registry, 1, -1 do
+                if registry[entry]:IsDescendantOf(holder) then
+                    table.remove(registry, entry)
+                end
+            end
+        end
+        for _, descendant in holder:GetDescendants() do
+            Library:RemoveFromRegistry(descendant)
+        end
+        Library:RemoveFromRegistry(holder)
+        holder:Destroy()
+    end
+
+    overlay:SetSize(info.Size or 260)
+    overlay:ResetPosition()
+    overlay:SetVisible(info.Visible ~= false)
+    self:OnUnload(function(): ()
+        overlay:Destroy()
+    end)
+    return overlay
 end
 
 function Library:AddDraggableImageButton(...)
@@ -4388,6 +5076,7 @@ local CurrentHoverInstance
 function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInstance: GuiObject)
     setthreadidentity(8)
     local TooltipTable = {
+        Destroyed = false,
         Disabled = false,
         Hovering = false,
         Signals = {},
@@ -4396,7 +5085,8 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
     local function DoHover()
         setthreadidentity(8)
         if
-            CurrentHoverInstance == HoverInstance
+            TooltipTable.Destroyed
+            or CurrentHoverInstance == HoverInstance
             or Library.ActiveDialog
             or (CurrentMenu and Library:MouseIsOverFrame(CurrentMenu.Menu, Mouse))
             or (TooltipTable.Disabled and typeof(DisabledInfoStr) ~= "string")
@@ -4417,7 +5107,8 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
         TooltipLabel.Visible = true
 
         while
-            (Library.Toggled or Library.ActiveLoading)
+            not TooltipTable.Destroyed
+            and (Library.Toggled or Library.ActiveLoading)
             and not Library.ActiveDialog
             and Library:MouseIsOverFrame(HoverInstance, Mouse)
             and not (CurrentMenu and Library:MouseIsOverFrame(CurrentMenu.Menu, Mouse))
@@ -4430,8 +5121,10 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
             RunService.RenderStepped:Wait()
         end
 
-        TooltipLabel.Visible = false
-        CurrentHoverInstance = nil
+        if not TooltipTable.Destroyed and CurrentHoverInstance == HoverInstance then
+            TooltipLabel.Visible = false
+            CurrentHoverInstance = nil
+        end
     end
 
     local function GiveSignal(Connection: RBXScriptConnection | RBXScriptSignal)
@@ -4458,6 +5151,7 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
 
     function TooltipTable:Destroy()
         setthreadidentity(8)
+        TooltipTable.Destroyed = true
         for Index = #TooltipTable.Signals, 1, -1 do
             local Connection = table.remove(TooltipTable.Signals, Index)
             if Connection and Connection.Connected then
@@ -4474,7 +5168,9 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
         end
     end
 
-    table.insert(Tooltips, TooltipLabel)
+    if not table.find(Tooltips, TooltipLabel) then
+        table.insert(Tooltips, TooltipLabel)
+    end
     return TooltipTable
 end
 
@@ -6499,7 +7195,7 @@ do
             ColorPicker.Changed = Func
         end
 
-        function ColorPicker:SetValue(HSV, Transparency)
+        function ColorPicker:SetValue(HSV: any, Transparency: number?): ()
             setthreadidentity(8)
             if typeof(HSV) == "Color3" then
                 ColorPicker:SetValueRGB(HSV, Transparency)
@@ -6507,14 +7203,14 @@ do
             end
 
             local Color = Color3.fromHSV(HSV[1], HSV[2], HSV[3])
-            ColorPicker.Transparency = Info.Transparency and Transparency or 0
+            ColorPicker.Transparency = if Info.Transparency then math.clamp(if Transparency ~= nil then Transparency else ColorPicker.Transparency, 0, 1) else 0
             ColorPicker:SetHSVFromRGB(Color)
             ColorPicker:Update()
         end
 
-        function ColorPicker:SetValueRGB(Color, Transparency)
+        function ColorPicker:SetValueRGB(Color: Color3, Transparency: number?): ()
             setthreadidentity(8)
-            ColorPicker.Transparency = Info.Transparency and Transparency or 0
+            ColorPicker.Transparency = if Info.Transparency then math.clamp(if Transparency ~= nil then Transparency else ColorPicker.Transparency, 0, 1) else 0
             ColorPicker:SetHSVFromRGB(Color)
             ColorPicker:Update()
         end
@@ -10379,6 +11075,7 @@ do
         local Teams = Info.Profiles or { "Enemies", "Allies", "Local" }
         assert(#Teams > 0 and #Teams <= 4, "ESP preview supports one to four profiles")
         local BoxTypes = { "None", "2D Box", "3D Box", "Bounding Box" }
+        local BodyPartNames = { Head = true, Torso = true, UpperTorso = true, LowerTorso = true, ["Left Arm"] = true, ["Right Arm"] = true, ["Left Leg"] = true, ["Right Leg"] = true, LeftUpperArm = true, LeftLowerArm = true, LeftHand = true, RightUpperArm = true, RightLowerArm = true, RightHand = true, LeftUpperLeg = true, LeftLowerLeg = true, LeftFoot = true, RightUpperLeg = true, RightLowerLeg = true, RightFoot = true }
         local Profiles, ProfileControls = {}, {}
         local Defaults
         local Accent = Info.AccentColor or Library.Scheme.AccentColor
@@ -10430,8 +11127,9 @@ do
         ChamsWorld.Parent = ChamsViewport
 
         local function Connect(signal: RBXScriptSignal, callback: (...any) -> ()): RBXScriptConnection
-            local connection = signal:Connect(function(...: any): ...any
-                return Library:WithUIIdentity(callback, ...)
+            local connection = signal:Connect(function(...: any)
+                setthreadidentity(8)
+                callback(...)
             end)
             table.insert(Preview.Connections, connection)
             return connection
@@ -10599,6 +11297,11 @@ do
             end
             local selected = ({ ForceField = Enum.Material.ForceField, Plastic = Enum.Material.Plastic, Glass = Enum.Material.Glass, Neon = Enum.Material.Neon })[settings.Material]
             if selected then appearance.Material, appearance.Color = selected, fill end
+            if settings.Glow or settings.Shading == false then
+                appearance.Material, appearance.Color = Enum.Material.Neon, fill
+            end
+            appearance.Reflectance = math.clamp(settings.Reflectance or 0, 0, 1)
+            appearance.CastShadow = settings.Shading ~= false
             appearance.FillColor, appearance.FillTransparency = fill, 1 - opacity * (1 - self.ModelTransparency)
             return appearance
         end
@@ -10609,6 +11312,12 @@ do
                 if part.Color ~= appearance.Color then part.Color = appearance.Color end
                 if part.Material ~= appearance.Material then part.Material = appearance.Material end
                 if part.Transparency ~= appearance.Transparency then part.Transparency = appearance.Transparency end
+                if part.Reflectance ~= (appearance.Reflectance or 0) then
+                    part.Reflectance = appearance.Reflectance or 0
+                end
+                if part.CastShadow ~= (appearance.CastShadow == true) then
+                    part.CastShadow = appearance.CastShadow == true
+                end
             end
             self:UpdateChamsTexture(appearance.Color)
             ChamsViewport.Visible = appearance.Enabled and appearance.FillTransparency < 1
@@ -10765,6 +11474,27 @@ do
             return object
         end
 
+        local NativeTextFonts = setmetatable({}, { __mode = "k" })
+        local function ApplyNativeTextFont(object: any, font: Enum.Font?): ()
+            local frame = if type(object) == "table" then rawget(object, "_frame") else nil
+            if typeof(frame) ~= "Instance" then
+                return
+            end
+
+            local previous = NativeTextFonts[object]
+            if font then
+                if not previous then
+                    NativeTextFonts[object] = { Face = frame.FontFace, DrawingFont = object.Font }
+                end
+                frame.Font = font
+            elseif previous then
+                if previous.Face and object.Font == previous.DrawingFont then
+                    frame.FontFace = previous.Face
+                end
+                NativeTextFonts[object] = nil
+            end
+        end
+
         local function Draw(item: any, key: string, className: string, properties: { [string]: any }, _context: any?): any
             local object = CreateDrawing(item, key, className, _context)
             if _context and _context.Drawn then _context.Drawn[object] = _context.Generation end
@@ -10773,7 +11503,7 @@ do
                 properties.Font = DrawingProvider.Fonts[settings and settings.Font or "System"] or 2
             end
             -- Z-WareDrawing insets filled squares by their outline thickness too.
-            if className == "Square" and properties.Filled == true and item.UsesGui then properties.Thickness = 0 end
+            if className == "Square" and properties.Filled == true then properties.Thickness = 0 end
             local scale = if item.UsesGui and not _context then Scale() else 1
             local origin = if _context then Vector2.zero elseif item.UsesGui then Stage.AbsolutePosition else -select(1, GuiService:GetGuiInset())
             for property, value in properties do
@@ -10789,6 +11519,11 @@ do
                 else
                     if object[property] ~= value then object[property] = value end
                 end
+            end
+            if className == "Text" then
+                local settings = if _context then _context.Settings else Preview.ProfileSettings
+                local font = if Info.Fonts and settings then Info.Fonts[settings.Font] else nil
+                ApplyNativeTextFont(object, font)
             end
             local transparency = 1 - (item.ResolvedTransparency or item.Transparency)
             if object.Transparency ~= transparency then object.Transparency = transparency end
@@ -10824,7 +11559,7 @@ do
                 Transparency = definition.Transparency or 0, Size = definition.Size or 12,
                 Outline = definition.Outline ~= false, Background = definition.Background == true,
                 BackgroundColor = definition.BackgroundColor or Color3.fromRGB(20, 22, 29),
-                Thickness = definition.Thickness or 2, Format = "Absolute", BoxType = definition.BoxType or "Bounding Box", Drawings = {},
+                Thickness = definition.Thickness or (if definition.Kind == "Skeleton" then 1 else 2), Format = "Absolute", BoxType = definition.BoxType or "Bounding Box", Drawings = {},
                 Hover = New("Frame", { BackgroundColor3 = Accent, BackgroundTransparency = 1, Visible = false, ZIndex = 2, Parent = HoverLayer }),
             }
             assert(table.find(Sides, item.Side), "Invalid ESP item side")
@@ -11432,17 +12167,28 @@ do
             local object = CreateDrawing(item, "Text", "Text", _context)
             local text = TextFor(item, _context)
             local settings = if _context then _context.Settings else Preview.ProfileSettings
+            local nativeFont = if Info.Fonts and settings then Info.Fonts[settings.Font] else nil
             local font = DrawingProvider.Fonts[settings and settings.Font or "System"] or 2
+            local fontKey = nativeFont or font
             local size = item.Size * (if item.UsesGui and not _context then 1 else scale)
-            if item.MeasureText == text and item.MeasureFont == font and item.MeasureSize == size and item.MeasureScale == scale then
+            if item.MeasureText == text and item.MeasureFont == fontKey and item.MeasureSize == size and item.MeasureScale == scale then
                 return item.MeasureWidth, item.MeasureHeight
             end
             if object.Text ~= text then object.Text = text end
+            if item.MeasureNativeFont and not nativeFont then
+                object.Font = if font == 0 then 1 else 0
+            end
             if object.Font ~= font then object.Font = font end
+            item.MeasureNativeFont = nativeFont
             if object.Size ~= size then object.Size = size end
+            if not nativeFont then ApplyNativeTextFont(object, nil) end
             local bounds = object.TextBounds
+            if nativeFont and item.UsesGui then
+                ApplyNativeTextFont(object, nativeFont)
+                bounds = TextService:GetTextSize(text, size, nativeFont, Vector2.new(math.huge, math.huge))
+            end
             local width, height = math.max(12, bounds.X * (if item.UsesGui and not _context then scale else 1)) + 8 * scale, (item.Size + 5) * scale
-            item.MeasureText, item.MeasureFont, item.MeasureSize, item.MeasureScale = text, font, size, scale
+            item.MeasureText, item.MeasureFont, item.MeasureSize, item.MeasureScale = text, fontKey, size, scale
             item.MeasureWidth, item.MeasureHeight = width, height
             return width, height
         end
@@ -11593,7 +12339,19 @@ do
             } do
                 local point = frame:PointToWorldSpace(minimum + (maximum - minimum) * offset)
                 if camera.CFrame:PointToObjectSpace(point).Z >= -0.1 then return nil end
-                table.insert(corners, Project(point, _context))
+                local projected = Project(point, _context)
+                if projected.X ~= projected.X or projected.Y ~= projected.Y or math.abs(projected.X) == math.huge or math.abs(projected.Y) == math.huge then
+                    return nil
+                end
+                table.insert(corners, projected)
+            end
+            local minimum, maximum = Vector2.new(math.huge, math.huge), Vector2.new(-math.huge, -math.huge)
+            for _, point in corners do
+                minimum, maximum = minimum:Min(point), maximum:Max(point)
+            end
+            local size = if _context then _context.ViewportSize else Stage.AbsoluteSize
+            if maximum.X - minimum.X > size.X * 2 or maximum.Y - minimum.Y > size.Y * 2 then
+                return nil
             end
             return corners
         end
@@ -11647,23 +12405,19 @@ do
                 local inset = math.min(math.max(1, math.floor(scale + 0.5)), (track.Width - 1) // 2, (track.Height - 1) // 2)
                 local length = (if vertical then track.Height else track.Width) - inset * 2
                 Square(item, "Track", track, Color3.fromRGB(36, 38, 47), true, nil, _context)
-                local segments = math.min(if health then 24 else 1, length)
-                for index = 1, segments do
-                    local lower = math.floor(((index - 1) / segments) * length + 0.5)
-                    local upper = math.floor(math.min(ratio, index / segments) * length + 0.5)
-                    if upper <= lower then continue end
+                local filledLength = math.floor(ratio * length + 0.5)
+                if filledLength > 0 then
                     local fill = {
                         X = track.X + inset, Y = track.Y + inset,
                         Width = track.Width - inset * 2, Height = track.Height - inset * 2,
                     }
                     if vertical then
-                        fill.Y += length - upper
-                        fill.Height = upper - lower
+                        fill.Y += length - filledLength
+                        fill.Height = filledLength
                     else
-                        fill.X += lower
-                        fill.Width = upper - lower
+                        fill.Width = filledLength
                     end
-                    Square(item, `Fill{index}`, fill, if health then Color3.fromRGB(255, 74, 86):Lerp(color, upper / length) else color, true, nil, _context)
+                    Square(item, "Fill1", fill, if health then Color3.fromRGB(255, 74, 86):Lerp(color, ratio) else color, true, nil, _context)
                 end
                 if health then
                     Draw(item, "Value", "Text", {
@@ -11933,7 +12687,7 @@ do
 
             local function WorldBounds(target: any, camera: Camera): any
                 local minimumX, minimumY, maximumX, maximumY = math.huge, math.huge, -math.huge, -math.huge
-                for _, part in target.Parts do
+                for _, part in target.RenderParts do
                     local frame, half = part.CFrame, part.Size / 2
                     local center = frame.Position
                     local horizontal, vertical, depth = frame.RightVector * half.X, frame.UpVector * half.Y, frame.LookVector * half.Z
@@ -11953,6 +12707,7 @@ do
                 local size = camera.ViewportSize
                 if maximumX < 0 or maximumY < 0 or minimumX > size.X or minimumY > size.Y then return nil end
                 if minimumX == math.huge or maximumX - minimumX < 1 or maximumY - minimumY < 1 then return nil end
+                if maximumX - minimumX > size.X * 2 or maximumY - minimumY > size.Y * 2 then return nil end
                 return { X = minimumX, Y = minimumY, Width = maximumX - minimumX, Height = maximumY - minimumY }
             end
 
@@ -11985,17 +12740,30 @@ do
                 target.Drawn = target.Drawn or {}
                 if not target.Parts then
                     target.Parts = {}
+                    local bodyOnly = humanoid and (character:FindFirstChild("Torso") or character:FindFirstChild("UpperTorso"))
                     for _, child in character:GetDescendants() do
-                        if child:IsA("BasePart") and child.Name ~= "HumanoidRootPart" then table.insert(target.Parts, child) end
+                        if child:IsA("BasePart") and child.Name ~= "HumanoidRootPart" and (not bodyOnly or child.Parent == character and BodyPartNames[child.Name]) then
+                            table.insert(target.Parts, child)
+                        end
                     end
                 end
                 local root = character:FindFirstChild("HumanoidRootPart")
+                local torso = if humanoid then character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso") else nil
+                local limit = if torso and torso:IsA("BasePart") then math.max(1, torso.Size.Magnitude) * 3 else nil
+                local renderParts = target.RenderParts or {}
+                target.RenderParts = renderParts
+                table.clear(renderParts)
+                for _, part in target.Parts do
+                    if part.Parent and (not limit or part.Size.Magnitude <= limit and (part.Position - torso.Position).Magnitude <= limit) then
+                        table.insert(renderParts, part)
+                    end
+                end
                 local rect = WorldBounds(target, camera)
                 if not rect then HideTarget(target); return end
                 local context = {
                     Player = player, Character = character, Humanoid = humanoid, RootPart = root, Pivot = pivot,
                     Camera = camera, Distance = distance, Team = team, DeltaTime = deltaTime, Data = {},
-                    Items = target.Items, Parts = target.Parts, Settings = settings, Scale = settings.TextScale or tracker.TextScale, Layer = layer, ViewportSize = camera.ViewportSize,
+                    Items = target.Items, Parts = renderParts, Settings = settings, Scale = settings.TextScale or tracker.TextScale, Layer = layer, ViewportSize = camera.ViewportSize,
                     Drawn = target.Drawn, Generation = target.Generation,
                 }
                 local dataProvider = options.DataProvider or Preview.DataProvider
@@ -12327,16 +13095,6 @@ do
             if index and not Groupbox.Destroyed then table.remove(Groupbox.Elements, index) end
             if Options[Idx] == self then Options[Idx] = nil end
             if not Groupbox.Destroyed and not Library.Unloaded then Groupbox:Resize() end
-        end
-
-        for _, name in {
-            "SetTeam", "SetValue", "SetItem", "SetSettings", "ApplyProfileControls", "BindProfileControls",
-            "SetObject", "SetHeight", "SetModelColor", "SetModelStyle", "SetExpanded", "Reset", "SetVisible", "Destroy",
-        } do
-            local method = Preview[name]
-            Preview[name] = function(self: any, ...: any): ...any
-                return Library:WithUIIdentity(method, self, ...)
-            end
         end
 
         ReadModel()
@@ -13844,6 +14602,25 @@ function Library:EscapeNotificationText(text: any): string
     return escaped
 end
 
+function Library:ResolveNotificationSegmentIcon(reference: any): string?
+    local explicit = type(reference) == "table"
+    if explicit then
+        reference = reference.Icon or reference.Image or reference.AssetId
+    end
+    if type(reference) == "number" then
+        return if reference > 0 and reference < math.huge and reference == math.floor(reference) then string.format("rbxassetid://%.0f", reference) else nil
+    end
+    if type(reference) ~= "string" then
+        return nil
+    end
+
+    local id = string.match(reference, "^rbxassetid://(%d+)$") or (if explicit then string.match(reference, "^(%d+)$") else nil)
+    if id and tonumber(id) and tonumber(id) > 0 then
+        return "rbxassetid://" .. id
+    end
+    return nil
+end
+
 function Library:GetNotificationColor(color: any): Color3
     if typeof(color) == "Color3" then return color end
     if type(color) == "string" then
@@ -13859,6 +14636,10 @@ function Library:FormatNotificationSegments(segments: { any }): string
     assert(type(segments) == "table", "Notification segments must be a table")
     local formatted = table.create(#segments)
     for _, segment in segments do
+        if Library:ResolveNotificationSegmentIcon(segment) then
+            continue
+        end
+
         local text = Library:EscapeNotificationText(if type(segment) == "table" then segment.Text or "" else segment)
         if type(segment) == "table" then
             if segment.Bold then text = "<b>" .. text .. "</b>" end
@@ -13979,6 +14760,9 @@ function Library:Notify(...: any): any
         Size = UDim2.fromScale(if data.Steps or typeof(data.Time) == "Instance" then 0 else 1, 1), Parent = timer,
     })
     data.Frame, data.Holder, data.Label, data.TimerFill = frame, holder, description, fill
+    data.InlineHolder = New("Frame", { BackgroundTransparency = 1, Visible = false, ClipsDescendants = true, Parent = holder })
+    data.InlineElements = {}
+
 
     function data:CancelTween(key: string): ()
         local tween = self.Tweens[key]
@@ -14019,6 +14803,136 @@ function Library:Notify(...: any): any
         return text
     end
 
+    function data:ClearInline(): ()
+        for _, view in self.InlineElements do
+            Library:RemoveFromRegistry(view)
+            view:Destroy()
+        end
+        table.clear(self.InlineElements)
+        self.InlineHolder.Visible = false
+    end
+
+    function data:LayoutInline(available: number, revision: number): (number?, number?)
+        local hasImages = false
+        for _, segment in self.Segments or {} do
+            if Library:ResolveNotificationSegmentIcon(segment) then
+                hasImages = true
+                break
+            end
+        end
+        if not hasImages then
+            self:ClearInline()
+            description.Visible = true
+            return nil, nil
+        end
+
+        local segments = table.clone(self.Segments)
+        if compact and self.Title then
+            table.insert(segments, 1, { Text = self.Title .. "  ", Bold = true, Color = self.TitleColor })
+        end
+        local atoms, x, y, rowHeight, width = {}, 0, 0, description.TextSize, 0
+        local function nextRow(): ()
+            width = math.max(width, x)
+            x, y, rowHeight = 0, y + rowHeight + 2, description.TextSize
+        end
+        local function place(atom: any): ()
+            if x > 0 and x + atom.Width > available then
+                nextRow()
+            end
+            atom.X, atom.Y = x, y
+            table.insert(atoms, atom)
+            x, rowHeight = x + atom.Width, math.max(rowHeight, atom.Height)
+        end
+        local function addText(text: string, segment: any): ()
+            local formatted = Library:FormatNotificationSegments({ { Text = text, Color = segment.Color, Bold = segment.Bold } })
+            local measured, height = Library:GetTextBounds(formatted, description.FontFace, description.TextSize, 1000000)
+            if measured > available then
+                for first, last in utf8.graphemes(text) do
+                    local grapheme = string.sub(text, first, last)
+                    local styled = Library:FormatNotificationSegments({ { Text = grapheme, Color = segment.Color, Bold = segment.Bold } })
+                    local characterWidth, characterHeight = Library:GetTextBounds(styled, description.FontFace, description.TextSize, 1000000)
+                    place({ Kind = "TextLabel", Text = styled, Width = math.min(available, characterWidth), Height = characterHeight })
+                end
+            else
+                if x == 0 and string.match(text, "^%s+$") then
+                    return
+                end
+                place({ Kind = "TextLabel", Text = formatted, Width = measured, Height = height })
+            end
+        end
+        for _, segment in segments do
+            local image = Library:ResolveNotificationSegmentIcon(segment)
+            if image then
+                local size = math.clamp(if type(segment) == "table" then tonumber(segment.Size) or description.TextSize else description.TextSize, 1, available)
+                place({ Kind = "ImageLabel", Image = image, Width = size, Height = size, Color = if type(segment) == "table" then segment.Color else nil })
+            else
+                local settings = if type(segment) == "table" then segment else { Text = segment }
+                local text = tostring(settings.Text or "")
+                local position = 1
+                while position <= #text do
+                    local newline = string.find(text, "\n", position, true)
+                    local line = string.sub(text, position, if newline then newline - 1 else #text)
+                    local cursor = 1
+                    while cursor <= #line do
+                        local first, last = string.find(line, "^%s+", cursor)
+                        if not first then
+                            first, last = string.find(line, "^%S+", cursor)
+                        end
+                        if not first or not last then
+                            break
+                        end
+
+                        addText(string.sub(line, first, last), settings)
+                        cursor = last + 1
+                    end
+                    if not newline then
+                        break
+                    end
+
+                    nextRow()
+                    position = newline + 1
+                end
+            end
+        end
+        if self.Destroyed or revision ~= self.LayoutRevision then
+            return 0, 0
+        end
+
+        for index, atom in atoms do
+            local view = self.InlineElements[index]
+            if view and view.ClassName ~= atom.Kind then
+                Library:RemoveFromRegistry(view)
+                view:Destroy()
+                view = nil
+            end
+            if not view then
+                view = New(atom.Kind, {
+                    BackgroundTransparency = 1, TextColor3 = if atom.Kind == "TextLabel" then "FontColor" else nil,
+                    TextSize = if atom.Kind == "TextLabel" then description.TextSize else nil,
+                    RichText = if atom.Kind == "TextLabel" then true else nil,
+                    TextXAlignment = if atom.Kind == "TextLabel" then Enum.TextXAlignment.Left else nil,
+                    ImageColor3 = if atom.Kind == "ImageLabel" then Color3.new(1, 1, 1) else nil,
+                    ScaleType = if atom.Kind == "ImageLabel" then Enum.ScaleType.Fit else nil,
+                    Parent = self.InlineHolder,
+                })
+                self.InlineElements[index] = view
+            end
+            view.Position, view.Size = UDim2.fromOffset(atom.X, atom.Y), UDim2.fromOffset(atom.Width, atom.Height)
+            if atom.Kind == "TextLabel" then
+                view.Text, view.FontFace = atom.Text, description.FontFace
+            else
+                view.Image, view.ImageColor3 = atom.Image, if atom.Color then Library:GetNotificationColor(atom.Color) else Color3.new(1, 1, 1)
+            end
+        end
+        for index = #self.InlineElements, #atoms + 1, -1 do
+            local view = table.remove(self.InlineElements, index)
+            Library:RemoveFromRegistry(view)
+            view:Destroy()
+        end
+        self.InlineHolder.Visible, description.Visible = true, false
+        return math.min(available, math.max(width, x)), y + rowHeight
+    end
+
     function data:Resize(): ()
         setthreadidentity(8)
         if self.Destroyed then return end
@@ -14030,6 +14944,10 @@ function Library:Notify(...: any): any
         local available = math.max(1, maximum - padding * 2 - iconWidth - closeWidth)
         local text = self:GetText()
         local width, height = Library:GetTextBounds(if self.RichText then text else Library:EscapeNotificationText(text), description.FontFace, description.TextSize, available)
+        local inlineWidth, inlineHeight = self:LayoutInline(available, revision)
+        if inlineWidth then
+            width, height = inlineWidth, inlineHeight
+        end
         local titleWidth, titleHeight = 0, 0
         if title then
             titleWidth, titleHeight = Library:GetTextBounds(if self.RichText then self.Title else Library:EscapeNotificationText(self.Title), title.FontFace, title.TextSize, available)
@@ -14044,6 +14962,7 @@ function Library:Notify(...: any): any
         description.Text = text
         description.Size = UDim2.fromOffset(textWidth, height)
         description.Position = UDim2.fromOffset(padding + iconWidth, vertical + (if title then titleHeight + 4 else math.max(0, (contentHeight - height) / 2)))
+        self.InlineHolder.Position, self.InlineHolder.Size = description.Position, description.Size
         if title then
             title.Text = self.Title
             title.Position = UDim2.fromOffset(padding + iconWidth, vertical)
@@ -14112,15 +15031,16 @@ function Library:Notify(...: any): any
         local index = table.find(NotifyOrder, frame)
         if index then table.remove(NotifyOrder, index) end
         if typeof(self.Time) == "Instance" then pcall(self.Time.Destroy, self.Time) end
-        Library:UpdateNotificationPositions()
         if _immediate or Library.Unloaded or not self.Ready then
             self:Dispose()
         else
+            -- Queue disposal before animation or layout can yield or fail.
+            self.Tasks.Dispose = task.delay(Library.NotifyTweenInfo.Time, function(): () self:Dispose() end)
             self:Tween("Exit", holder, Library.NotifyTweenInfo, {
                 GroupTransparency = 1, Position = UDim2.fromOffset(if string.lower(Library.NotifySide) == "left" then -14 else 14, -3),
             })
-            self.Tasks.Dispose = task.delay(Library.NotifyTweenInfo.Time, function(): () self:Dispose() end)
         end
+        Library:UpdateNotificationPositions()
         if self.Callback then
             local success, message = pcall(self.Callback, _reason or "script")
             if not success then warn("[Obsidian notification] " .. tostring(message)) end
@@ -14163,15 +15083,18 @@ function Library:Notify(...: any): any
     data:Tween("Enter", holder, Library.NotifyTweenInfo, { Position = UDim2.fromOffset(0, 0), GroupTransparency = 0 })
     Library:UpdateNotificationPositions()
     if not data.Persist and typeof(data.Time) ~= "Instance" then
+        local duration = math.max(0, tonumber(data.Time) or 5)
+        data.Tasks.Expiry = task.delay(Library.NotifyTweenInfo.Time + duration, function(): ()
+            data.Tasks.Expiry = nil
+            data:Destroy("timer", true)
+        end)
         data.Tasks.Enter = task.delay(Library.NotifyTweenInfo.Time, function(): ()
             setthreadidentity(8)
             data.Tasks.Enter = nil
             if data.Destroyed then return end
-            local duration = math.max(0, tonumber(data.Time) or 5)
             if showTimer and not data.Steps then
                 data:Tween("Timer", fill, TweenInfo.new(duration, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut), { Size = UDim2.fromScale(0, 1) })
             end
-            data.Tasks.Expiry = task.delay(duration, function(): () data:Destroy("timer") end)
         end)
     end
     if data.SoundId then
@@ -16150,11 +17073,6 @@ function Library:CreateWindow(WindowInfo)
             Size = UDim2.fromScale(1, 1),
             Parent = SubTabHolder,
         })
-        New("UIListLayout", {
-            FillDirection = Enum.FillDirection.Horizontal,
-            HorizontalFlex = Enum.UIFlexAlignment.Fill,
-            Parent = SubTabButtons,
-        })
 
        --// Tab Table \\--
         local Tab = {
@@ -16347,7 +17265,7 @@ function Library:CreateWindow(WindowInfo)
 
         function Tab:RefreshSides()
             setthreadidentity(8)
-            local SubTabOffset = SubTabHolder.Visible and 38 or 0
+            local SubTabOffset = SubTabHolder.Visible and SubTabHolder.Size.Y.Offset + 4 or 0
             local WarningOffset = WarningBoxHolder.Visible and WarningBox.Size.Y.Offset + 8 or 0
             local Offset = SubTabOffset + WarningOffset
 
@@ -16415,6 +17333,7 @@ function Library:CreateWindow(WindowInfo)
             local HasVisibleSubTabs = FirstSubTab ~= nil
 
             SubTabHolder.Visible = HasVisibleSubTabs
+            SubTabHolder.Size = UDim2.new(1, -4, 0, Library:LayoutTabButtons(SubTabButtons, Tab.SubTabOrder, 34))
             Tab.RootSides[1].Visible = not HasVisibleSubTabs
             Tab.RootSides[2].Visible = not HasVisibleSubTabs
 
@@ -16434,6 +17353,10 @@ function Library:CreateWindow(WindowInfo)
             end
             Tab:RefreshSides()
         end
+
+        table.insert(Tab.Connections, SubTabButtons:GetPropertyChangedSignal("AbsoluteSize"):Connect(function(): ()
+            Tab:RefreshSubTabs()
+        end))
 
         function Tab:AddSubTab(...)
             setthreadidentity(8)
@@ -16462,6 +17385,7 @@ function Library:CreateWindow(WindowInfo)
                 BackgroundColor3 = "MainColor",
                 BackgroundTransparency = 0,
                 LayoutOrder = SubTabInfo.Order or SubTabIndex,
+                ClipsDescendants = true,
                 Size = UDim2.fromOffset(0, 34),
                 Text = "",
                 ZIndex = 3,
@@ -16586,6 +17510,7 @@ function Library:CreateWindow(WindowInfo)
                 Destroyed = false,
                 Visible = true,
                 Button = Button,
+                ButtonContent = ButtonContent,
                 ButtonCorner = ButtonCorner,
                 Canvas = Canvas,
                 Groupboxes = {},
@@ -16754,6 +17679,9 @@ function Library:CreateWindow(WindowInfo)
                 Tab:RefreshSubTabs()
             end
 
+            table.insert(SubTab.Connections, ButtonContent:GetPropertyChangedSignal("AbsoluteSize"):Connect(function(): ()
+                Tab:RefreshSubTabs()
+            end))
             table.insert(SubTab.Connections, Button.MouseEnter:Connect(function()
                 setthreadidentity(8)
                 if Tab.ActiveSubTab ~= SubTab then
@@ -16835,11 +17763,6 @@ function Library:CreateWindow(WindowInfo)
                     Size = UDim2.new(1, 0, 0, 34),
                     Parent = TabboxHolder,
                 })
-                New("UIListLayout", {
-                    FillDirection = Enum.FillDirection.Horizontal,
-                    HorizontalFlex = Enum.UIFlexAlignment.Fill,
-                    Parent = TabboxButtons,
-                })
             end
 
             local TotalTabs = 0
@@ -16877,6 +17800,20 @@ function Library:CreateWindow(WindowInfo)
                 end
             end
 
+            function Tabbox:RefreshTabs(): ()
+                if Tabbox.Destroyed then
+                    return
+                end
+
+                local height = Library:LayoutTabButtons(TabboxButtons, Tabbox.Tabs, 34)
+                TabboxButtons.Size = UDim2.new(1, 0, 0, height)
+                Tabbox:Resize()
+            end
+
+            table.insert(Tabbox.Connections, TabboxButtons:GetPropertyChangedSignal("AbsoluteSize"):Connect(function(): ()
+                Tabbox:RefreshTabs()
+            end))
+
             function Tabbox:AddTab(Name, IconName)
                 setthreadidentity(8)
                 TotalTabs = TotalTabs + 1
@@ -16894,6 +17831,8 @@ function Library:CreateWindow(WindowInfo)
                     BackgroundColor3 = "MainColor",
                     BackgroundTransparency = 0,
                     Size = UDim2.fromOffset(0, 34),
+                    LayoutOrder = TabIndex,
+                    ClipsDescendants = true,
                     Text = "",
                     Parent = TabboxButtons,
                 })
@@ -16984,6 +17923,7 @@ function Library:CreateWindow(WindowInfo)
                     Destroyed = false,
 
                     ButtonHolder = Button,
+                    ButtonContent = ButtonContent,
                     Container = Container,
                     ButtonCorner = ButtonCorner,
 
@@ -17040,12 +17980,15 @@ function Library:CreateWindow(WindowInfo)
                         return
                     end
 
+                    local headerHeight = TabboxButtons.Size.Y.Offset + 1
+                    Container.Position = UDim2.fromOffset(0, headerHeight)
+                    Container.Size = UDim2.new(1, 0, 1, -headerHeight)
                     local ContentSize = (List.AbsoluteContentSize.Y / Library.DPIScale) + 14
                     if Tabbox.PoppedOut then
-                        ContentSize = math.min(ContentSize, GetPopOutBodyMaxHeight(Tabbox, 35))
+                        ContentSize = math.min(ContentSize, GetPopOutBodyMaxHeight(Tabbox, headerHeight))
                     end
 
-                    TabboxHolder.Size = UDim2.new(1, 0, 0, ContentSize + 35)
+                    TabboxHolder.Size = UDim2.new(1, 0, 0, ContentSize + headerHeight)
                     if ParentObj.Type == "Groupbox" then
                         ParentObj:Resize()
                     end
@@ -17088,6 +18031,7 @@ function Library:CreateWindow(WindowInfo)
                     if Button then
                         Button:Destroy()
                     end
+                    Tabbox:RefreshTabs()
                 end
 
                 --// Execution \\--
@@ -17095,11 +18039,15 @@ function Library:CreateWindow(WindowInfo)
                     Tab:Show()
                 end
 
+                table.insert(Tab.Connections, ButtonContent:GetPropertyChangedSignal("AbsoluteSize"):Connect(function(): ()
+                    Tabbox:RefreshTabs()
+                end))
                 Button.MouseButton1Click:Connect(Tab.Show)
 
                 setmetatable(Tab, BaseGroupbox)
 
                 Tabbox.Tabs[TabStoringIndex] = Tab
+                Tabbox:RefreshTabs()
                 Tabbox:UpdateCorners()
 
                 return Tab, TabStoringIndex
