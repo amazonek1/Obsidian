@@ -16,14 +16,15 @@ export type StatusViewerItem = {
 export type StatusViewerData = {
     Name: string?, Username: string?, UserId: number?, Avatar: (string | number)?,
     Status: string?, StatusColor: Color3?, Health: number?, MaxHealth: number?, HealthColor: Color3?,
-    Distance: number?, DistanceUnit: string?, Items: { StatusViewerItem }?,
+    Distance: number?, DistanceUnit: string?, Hotbar: { StatusViewerItem }?, Armor: { StatusViewerItem }?,
 }
 export type StatusViewerOptions = {
     Title: string?, Badge: string?, Width: number?, Columns: number?, MaxItems: number?,
+    MaxHotbarItems: number?, MaxArmorItems: number?,
     Position: UDim2?, Visible: boolean?, Animated: boolean?,
 }
 export type StatusViewer = {
-    Holder: Frame, Container: Frame, NameLabel: TextLabel, StatusLabel: TextLabel,
+    Holder: Frame, Container: Frame, Hotbar: Frame, Armor: Frame, NameLabel: TextLabel, StatusLabel: TextLabel,
     HealthLabel: TextLabel, HealthFill: Frame, Destroyed: boolean,
     SetData: (StatusViewer, StatusViewerData?) -> (), SetVisible: (StatusViewer, boolean) -> (),
     SetWidth: (StatusViewer, number) -> (), ResetPosition: (StatusViewer) -> (),
@@ -206,6 +207,7 @@ end
 
 local Library = {
     ESPPreviewVersion = 5,
+    StatusViewerVersion = 2,
     LocalPlayer = LocalPlayer,
     IsRobloxFocused = true,
 
@@ -4093,43 +4095,56 @@ function Library:AddStatusViewer(_info: StatusViewerOptions?): StatusViewer
         Size = UDim2.fromScale(0, 1), Parent = track,
     })
     corner(fill)
-    label(container, "EquipmentTitle", 10, {
-        Text = "EQUIPMENT", TextTransparency = 0.4,
-        Position = UDim2.fromOffset(12, 90), Size = UDim2.new(1, -100, 0, 16),
-    })
-    local countLabel = label(container, "EquipmentCount", 10, {
-        Text = "0 ITEMS", TextTransparency = 0.55, TextXAlignment = Enum.TextXAlignment.Right,
-        Position = UDim2.new(1, -100, 0, 90), Size = UDim2.fromOffset(88, 16),
-    })
-    local grid = New("Frame", {
-        BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 114),
-        Size = UDim2.new(1, -24, 0, 54), Parent = container,
-    })
-    local layout = New("UIGridLayout", {
-        SortOrder = Enum.SortOrder.LayoutOrder, CellPadding = UDim2.fromOffset(6, 6), Parent = grid,
-    })
-    local empty = label(container, "EmptyEquipment", 12, {
-        Text = "Equipment Unavailable", TextTransparency = 0.55,
-        Position = UDim2.fromOffset(12, 114), Size = UDim2.new(1, -24, 0, 54),
-        TextXAlignment = Enum.TextXAlignment.Center,
-    })
-
     type Slot = {
         Holder: Frame, Image: ImageLabel, Placeholder: TextLabel, Name: TextLabel,
         Count: TextLabel, Track: Frame, Fill: Frame, Outline: UIStroke,
         Tooltip: any?, TooltipText: string?,
     }
+    type ItemGroup = {
+        Name: string, Holder: Frame, Grid: Frame, Layout: UIGridLayout, CountLabel: TextLabel,
+        EmptyLabel: TextLabel, Slots: { Slot }, ItemCount: number, MaxItems: number,
+    }
+    local function createGroup(name: string, title: string, emptyText: string, limit: number?): ItemGroup
+        local frame = New("Frame", {
+            Name = name, BackgroundTransparency = 1, Size = UDim2.new(1, -24, 0, 78), Parent = container,
+        })
+        label(frame, name .. "Title", 10, {
+            Text = title, TextTransparency = 0.4, Size = UDim2.new(1, -88, 0, 16),
+        })
+        local countLabel = label(frame, name .. "Count", 10, {
+            Text = "0 ITEMS", TextTransparency = 0.55, TextXAlignment = Enum.TextXAlignment.Right,
+            Position = UDim2.new(1, -88, 0, 0), Size = UDim2.fromOffset(88, 16),
+        })
+        local grid = New("Frame", {
+            Name = name .. "Grid", BackgroundTransparency = 1, Position = UDim2.fromOffset(0, 24),
+            Size = UDim2.new(1, 0, 0, 54), Parent = frame,
+        })
+        local layout = New("UIGridLayout", {
+            SortOrder = Enum.SortOrder.LayoutOrder, CellPadding = UDim2.fromOffset(6, 6), Parent = grid,
+        })
+        local empty = label(frame, "Empty" .. name, 12, {
+            Text = emptyText, TextTransparency = 0.55, Position = UDim2.fromOffset(0, 24),
+            Size = UDim2.new(1, 0, 0, 54), TextXAlignment = Enum.TextXAlignment.Center,
+        })
+        return {
+            Name = name, Holder = frame, Grid = grid, Layout = layout, CountLabel = countLabel,
+            EmptyLabel = empty, Slots = {}, ItemCount = 0,
+            MaxItems = math.clamp(math.floor(finite(limit, finite(info.MaxItems, 14))), 1, 28),
+        }
+    end
+    local hotbar = createGroup("Hotbar", "HOTBAR", "No Hotbar Items", info.MaxHotbarItems)
+    local armor = createGroup("Armor", "ARMOR & CLOTHING", "No Armor Equipped", info.MaxArmorItems)
     type State = {
-        Slots: { Slot }, Connections: { RBXScriptConnection }, Width: number,
-        Columns: number, MaxItems: number, ItemCount: number, Progress: number?, Tween: Tween?,
+        Groups: { ItemGroup }, Connections: { RBXScriptConnection }, Width: number,
+        Columns: number, Progress: number?, Tween: Tween?,
     }
     local state: State = {
-        Slots = {}, Connections = {}, Width = math.clamp(finite(info.Width, 392), 280, 560),
+        Groups = { hotbar, armor }, Connections = {}, Width = math.clamp(finite(info.Width, 392), 280, 560),
         Columns = math.clamp(math.floor(finite(info.Columns, 7)), 3, 8),
-        MaxItems = math.clamp(math.floor(finite(info.MaxItems, 14)), 1, 28), ItemCount = 0,
     }
     local viewer: StatusViewer = {
-        Holder = holder, Container = container, NameLabel = nameLabel, StatusLabel = statusLabel,
+        Holder = holder, Container = container, Hotbar = hotbar.Holder, Armor = armor.Holder,
+        NameLabel = nameLabel, StatusLabel = statusLabel,
         HealthLabel = healthLabel, HealthFill = fill, Destroyed = false,
     } :: any
     local unload: (() -> ())?
@@ -4169,12 +4184,19 @@ function Library:AddStatusViewer(_info: StatusViewerOptions?): StatusViewer
         local width = if ScreenGui.AbsoluteSize.X > 0
             then math.min(state.Width, math.max(220, available)) else state.Width
         local columns = math.min(state.Columns, math.max(3, math.floor((width - 18) / 46)))
-        local rows = math.max(1, math.ceil(state.ItemCount / columns))
-        layout.FillDirectionMaxCells = columns
         local cellWidth = math.floor((width - 24 - 6 * (columns - 1)) / columns)
-        layout.CellSize = UDim2.fromOffset(cellWidth, 54)
-        grid.Size = UDim2.new(1, -24, 0, rows * 60 - 6)
-        holder.Size = UDim2.fromOffset(width, 155 + rows * 60)
+        local y = 90
+        for _, group in state.Groups do
+            local rows = math.max(1, math.ceil(group.ItemCount / columns))
+            local height = rows * 60 - 6
+            group.Layout.FillDirectionMaxCells = columns
+            group.Layout.CellSize = UDim2.fromOffset(cellWidth, 54)
+            group.Grid.Size = UDim2.new(1, 0, 0, height)
+            group.Holder.Position = UDim2.fromOffset(12, y)
+            group.Holder.Size = UDim2.new(1, -24, 0, height + 24)
+            y += height + 36
+        end
+        holder.Size = UDim2.fromOffset(width, y + 35)
         fitPosition(holder.Position)
     end
 
@@ -4186,10 +4208,10 @@ function Library:AddStatusViewer(_info: StatusViewerOptions?): StatusViewer
         end
     end
 
-    local function createSlot(index: number): Slot
+    local function createSlot(group: ItemGroup, index: number): Slot
         local frame = New("Frame", {
-            Name = "Equipment" .. index, BackgroundColor3 = "MainColor", BorderSizePixel = 0,
-            LayoutOrder = index, Parent = grid,
+            Name = group.Name .. "Item" .. index, BackgroundColor3 = "MainColor", BorderSizePixel = 0,
+            LayoutOrder = index, Parent = group.Grid,
         })
         corner(frame)
         local outline = New("UIStroke", { Color = "OutlineColor", Thickness = 1, Parent = frame })
@@ -4206,6 +4228,12 @@ function Library:AddStatusViewer(_info: StatusViewerOptions?): StatusViewer
             Text = "", TextXAlignment = Enum.TextXAlignment.Center, TextTransparency = 0.2,
             Position = UDim2.fromOffset(3, 36), Size = UDim2.new(1, -6, 0, 13),
         })
+        if group.Name == "Hotbar" then
+            label(frame, "SlotNumber", 9, {
+                Text = tostring(index), TextTransparency = 0.4,
+                Position = UDim2.fromOffset(3, 1), Size = UDim2.fromOffset(16, 12),
+            })
+        end
         local count = label(frame, "Quantity", 9, {
             Text = "", TextXAlignment = Enum.TextXAlignment.Right,
             Position = UDim2.fromOffset(2, 1), Size = UDim2.new(1, -5, 0, 12),
@@ -4222,6 +4250,65 @@ function Library:AddStatusViewer(_info: StatusViewerOptions?): StatusViewer
             Holder = frame, Image = itemImage, Placeholder = placeholder, Name = itemName,
             Count = count, Track = itemTrack, Fill = itemFill, Outline = outline,
         }
+    end
+
+    local function updateGroup(group: ItemGroup, items: { StatusViewerItem }): ()
+        group.ItemCount = math.min(#items, group.MaxItems)
+        group.EmptyLabel.Visible = group.ItemCount == 0
+        group.CountLabel.Text = if #items > group.MaxItems
+            then string.format("%d / %d ITEMS", group.ItemCount, #items)
+            else string.format("%d %s", #items, if #items == 1 then "ITEM" else "ITEMS")
+        for index = 1, group.ItemCount do
+            local item = items[index]
+            local slot = group.Slots[index] or createSlot(group, index)
+            group.Slots[index] = slot
+            slot.Holder.Visible = true
+            slot.Name.Text = item.Label or item.Name
+            local count = math.max(1, math.floor(finite(item.Count, 1)))
+            slot.Count.Text = if count > 1 then "×" .. tostring(count) else ""
+            local asset = imageUri(item.Image)
+            local icon = if asset == "" then Library:GetCustomIcon(item.Icon or "package") else nil
+            slot.Image.Image = asset
+            slot.Image.ImageRectOffset = Vector2.zero
+            slot.Image.ImageRectSize = Vector2.zero
+            if icon then
+                Library:ApplyLucideIcon(slot.Image, icon)
+            end
+            FillInstance({ ImageColor3 = if asset ~= "" then "WhiteColor" else "FontColor" }, slot.Image)
+            slot.Image.Visible = asset ~= "" or icon ~= nil
+            slot.Placeholder.Visible = not slot.Image.Visible
+            local equipped = group.Name == "Hotbar" and item.Equipped == true
+            FillInstance({ Color = if equipped then "AccentColor" else "OutlineColor" }, slot.Outline)
+            local maxCondition = finite(item.MaxDurability, 100)
+            local condition = math.clamp(finite(item.Durability, 0), 0, math.max(maxCondition, 0))
+            slot.Track.Visible = item.Durability ~= nil and maxCondition > 0
+            slot.Fill.Size = UDim2.fromScale(if maxCondition > 0 then condition / maxCondition else 0, 1)
+            local tooltip = escape(item.Name)
+            if item.Slot then
+                tooltip ..= "\n" .. escape(item.Slot)
+            end
+            if equipped then
+                tooltip ..= " · Equipped"
+            end
+            if count > 1 then
+                tooltip ..= string.format("\nQuantity: %d", count)
+            end
+            if slot.Track.Visible then
+                tooltip ..= string.format("\nCondition: %.0f%%", condition / maxCondition * 100)
+            end
+            if slot.TooltipText ~= tooltip or not slot.Tooltip then
+                clearTooltip(slot)
+                slot.TooltipText = tooltip
+                slot.Tooltip = Library:AddTooltip(tooltip, nil, slot.Holder)
+            end
+        end
+        for index = group.ItemCount + 1, #group.Slots do
+            local slot = group.Slots[index]
+            slot.Holder.Visible = false
+            slot.Image.Image = ""
+            slot.Name.Text = ""
+            clearTooltip(slot)
+        end
     end
 
     function viewer:SetData(_data: StatusViewerData?): ()
@@ -4269,62 +4356,8 @@ function Library:AddStatusViewer(_info: StatusViewerOptions?): StatusViewer
             state.Progress = progress
         end
 
-        local items = data.Items or {}
-        state.ItemCount = math.min(#items, state.MaxItems)
-        empty.Visible = state.ItemCount == 0
-        countLabel.Text = if #items > state.MaxItems
-            then string.format("%d / %d ITEMS", state.ItemCount, #items)
-            else string.format("%d %s", #items, if #items == 1 then "ITEM" else "ITEMS")
-        for index = 1, state.ItemCount do
-            local item = items[index]
-            local slot = state.Slots[index] or createSlot(index)
-            state.Slots[index] = slot
-            slot.Holder.Visible = true
-            slot.Name.Text = item.Label or item.Name
-            local count = math.max(1, math.floor(finite(item.Count, 1)))
-            slot.Count.Text = if count > 1 then "×" .. tostring(count) else ""
-            local asset = imageUri(item.Image)
-            local icon = if asset == "" then Library:GetCustomIcon(item.Icon or "package") else nil
-            slot.Image.Image = asset
-            slot.Image.ImageRectOffset = Vector2.zero
-            slot.Image.ImageRectSize = Vector2.zero
-            if icon then
-                Library:ApplyLucideIcon(slot.Image, icon)
-            end
-            FillInstance({ ImageColor3 = if asset ~= "" then "WhiteColor" else "FontColor" }, slot.Image)
-            slot.Image.Visible = asset ~= "" or icon ~= nil
-            slot.Placeholder.Visible = not slot.Image.Visible
-            FillInstance({ Color = if item.Equipped then "AccentColor" else "OutlineColor" }, slot.Outline)
-            local maxCondition = finite(item.MaxDurability, 100)
-            local condition = math.clamp(finite(item.Durability, 0), 0, math.max(maxCondition, 0))
-            slot.Track.Visible = item.Durability ~= nil and maxCondition > 0
-            slot.Fill.Size = UDim2.fromScale(if maxCondition > 0 then condition / maxCondition else 0, 1)
-            local tooltip = escape(item.Name)
-            if item.Slot then
-                tooltip ..= "\n" .. escape(item.Slot)
-            end
-            if item.Equipped then
-                tooltip ..= " · Equipped"
-            end
-            if count > 1 then
-                tooltip ..= string.format("\nQuantity: %d", count)
-            end
-            if slot.Track.Visible then
-                tooltip ..= string.format("\nCondition: %.0f%%", condition / maxCondition * 100)
-            end
-            if slot.TooltipText ~= tooltip or not slot.Tooltip then
-                clearTooltip(slot)
-                slot.TooltipText = tooltip
-                slot.Tooltip = Library:AddTooltip(tooltip, nil, slot.Holder)
-            end
-        end
-        for index = state.ItemCount + 1, #state.Slots do
-            local slot = state.Slots[index]
-            slot.Holder.Visible = false
-            slot.Image.Image = ""
-            slot.Name.Text = ""
-            clearTooltip(slot)
-        end
+        updateGroup(hotbar, data.Hotbar or {})
+        updateGroup(armor, data.Armor or {})
         resize()
     end
 
@@ -4335,12 +4368,14 @@ function Library:AddStatusViewer(_info: StatusViewerOptions?): StatusViewer
         end
 
         holder.Visible = visible
-        for _, slot in state.Slots do
-            if not visible and slot.Tooltip then
-                slot.Tooltip:Destroy()
-                slot.Tooltip = nil
-            elseif visible and slot.Holder.Visible and not slot.Tooltip and slot.TooltipText then
-                slot.Tooltip = Library:AddTooltip(slot.TooltipText, nil, slot.Holder)
+        for _, group in state.Groups do
+            for _, slot in group.Slots do
+                if not visible and slot.Tooltip then
+                    slot.Tooltip:Destroy()
+                    slot.Tooltip = nil
+                elseif visible and slot.Holder.Visible and not slot.Tooltip and slot.TooltipText then
+                    slot.Tooltip = Library:AddTooltip(slot.TooltipText, nil, slot.Holder)
+                end
             end
         end
         if not visible then
@@ -4376,8 +4411,11 @@ function Library:AddStatusViewer(_info: StatusViewerOptions?): StatusViewer
 
         self.Destroyed = true
         stopTween()
-        for _, slot in state.Slots do
-            clearTooltip(slot)
+        for _, group in state.Groups do
+            for _, slot in group.Slots do
+                clearTooltip(slot)
+            end
+            table.clear(group.Slots)
         end
         for _, connection in state.Connections do
             connection:Disconnect()
@@ -4407,7 +4445,7 @@ function Library:AddStatusViewer(_info: StatusViewerOptions?): StatusViewer
         end
         holder:Destroy()
         table.clear(state.Connections)
-        table.clear(state.Slots)
+        table.clear(state.Groups)
     end
 
     for index = firstSignal, #self.Signals do
